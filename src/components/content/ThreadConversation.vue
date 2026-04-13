@@ -12,7 +12,7 @@
     <ul
       v-else
       ref="conversationListRef"
-      class="conversation-list"
+      class="conversation-list codex-subtle-scroll"
       @scroll="onConversationScroll"
       @wheel.passive="scheduleUserScrollStateSync"
     >

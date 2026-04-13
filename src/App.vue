@@ -679,14 +679,7 @@ async function submitFirstMessageForNewThread(draft: UiComposerDraft): Promise<v
 }
 
 .sidebar-thread-tree-host {
-  @apply flex-1 min-h-0 overflow-y-auto;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-
-.sidebar-thread-tree-host::-webkit-scrollbar {
-  width: 0;
-  height: 0;
+  @apply flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden;
 }
 
 .sidebar-thread-controls-header-host {

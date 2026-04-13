@@ -96,7 +96,7 @@ function onResizeHandleMouseDown(event: MouseEvent): void {
 }
 
 .desktop-sidebar {
-  @apply bg-slate-100 min-h-0 overflow-y-auto;
+  @apply bg-slate-100 min-h-0 overflow-hidden;
 }
 
 .desktop-resize-handle {

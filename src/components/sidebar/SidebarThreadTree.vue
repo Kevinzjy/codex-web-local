@@ -46,11 +46,12 @@
       <span class="thread-tree-header">Threads</span>
     </SidebarMenuRow>
 
-    <p v-if="isSearchActive && filteredGroups.length === 0" class="thread-tree-no-results">No matching threads</p>
+    <div class="thread-tree-scroll codex-subtle-scroll">
+      <p v-if="isSearchActive && filteredGroups.length === 0" class="thread-tree-no-results">No matching threads</p>
 
-    <p v-else-if="isLoading && groups.length === 0" class="thread-tree-loading">Loading threads...</p>
+      <p v-else-if="isLoading && groups.length === 0" class="thread-tree-loading">Loading threads...</p>
 
-    <div v-else ref="groupsContainerRef" class="thread-tree-groups" :style="groupsContainerStyle">
+      <div v-else ref="groupsContainerRef" class="thread-tree-groups" :style="groupsContainerStyle">
       <article
         v-for="group in filteredGroups"
         :key="group.projectName"
@@ -200,6 +201,7 @@
             </button>
           </SidebarMenuRow>
       </article>
+    </div>
     </div>
 
     <div
@@ -1324,15 +1326,19 @@ onBeforeUnmount(() => {
 @reference "tailwindcss";
 
 .thread-tree-root {
-  @apply flex flex-col;
+  @apply flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden;
+}
+
+.thread-tree-scroll {
+  @apply flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden;
 }
 
 .pinned-section {
-  @apply mb-1;
+  @apply mb-1 shrink-0;
 }
 
 .thread-tree-header-row {
-  @apply cursor-default;
+  @apply shrink-0 cursor-default;
 }
 
 .thread-tree-header {

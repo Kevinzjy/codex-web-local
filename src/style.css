@@ -427,3 +427,44 @@ body {
 [data-theme='dark'] .approval-button:hover {
   background: #303336;
 }
+
+/* Thin scrollbars: visible on hover / scroll, low contrast when idle (sidebar list + conversation). */
+.codex-subtle-scroll {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(24, 24, 27, 0.22) transparent;
+}
+
+.codex-subtle-scroll:hover {
+  scrollbar-color: rgba(24, 24, 27, 0.45) transparent;
+}
+
+.codex-subtle-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.codex-subtle-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.codex-subtle-scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 9999px;
+}
+
+.codex-subtle-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(24, 24, 27, 0.28);
+}
+
+[data-theme='dark'] .codex-subtle-scroll {
+  scrollbar-color: rgba(228, 228, 231, 0.22) transparent;
+}
+
+[data-theme='dark'] .codex-subtle-scroll:hover {
+  scrollbar-color: rgba(228, 228, 231, 0.42) transparent;
+}
+
+[data-theme='dark'] .codex-subtle-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(228, 228, 231, 0.3);
+}
