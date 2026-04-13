@@ -1,4 +1,5 @@
 import {
+  fetchGitStatus,
   fetchRpcMethodCatalog,
   fetchRpcNotificationCatalog,
   fetchPendingServerRequests,
@@ -17,7 +18,14 @@ import type {
 } from './appServerDtos'
 import { normalizeCodexApiError } from './codexErrors'
 import { normalizeThreadGroupsV2, normalizeThreadMessagesV2 } from './normalizers/v2'
-import type { UiComposerDraft, UiMessage, UiProjectGroup, UiServerRequestId, UserInput } from '../types/codex'
+import type {
+  UiComposerDraft,
+  UiGitStatus,
+  UiMessage,
+  UiProjectGroup,
+  UiServerRequestId,
+  UserInput,
+} from '../types/codex'
 
 type CurrentModelConfig = {
   model: string
@@ -227,6 +235,10 @@ export async function getCurrentModelConfig(): Promise<CurrentModelConfig> {
 
 export async function getAccountRateLimits(): Promise<GetAccountRateLimitsResponse> {
   return callRpc<GetAccountRateLimitsResponse>('account/rateLimits/read')
+}
+
+export async function getGitStatus(cwd: string): Promise<UiGitStatus> {
+  return fetchGitStatus(cwd)
 }
 
 // `thread/loaded/list` returns sessions loaded in memory, not currently running turns.

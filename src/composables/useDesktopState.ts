@@ -1,9 +1,10 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   archiveThread,
   getAccountRateLimits,
   getAvailableModelIds,
   getCurrentModelConfig,
+  getGitStatus,
   getPendingServerRequests,
   interruptThreadTurn,
   replyToServerRequest,
@@ -24,6 +25,7 @@ import type {
   ReasoningEffort,
   ThreadScrollState,
   UiComposerDraft,
+  UiGitStatus,
   UiLiveOverlay,
   UiMessage,
   UiProjectGroup,
@@ -69,6 +71,7 @@ const MANUAL_UNREAD_STORAGE_KEY = 'codex-web-local.manual-unread.v1'
 const AUTO_REFRESH_ENABLED_STORAGE_KEY = 'codex-web-local.auto-refresh-enabled.v1'
 const EVENT_SYNC_DEBOUNCE_MS = 220
 const AUTO_REFRESH_INTERVAL_MS = 4000
+const GIT_STATUS_MIN_GAP_MS = 2000
 const REASONING_EFFORT_OPTIONS: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
 const GLOBAL_SERVER_REQUEST_SCOPE = '__global__'
 
@@ -635,6 +638,9 @@ export function useDesktopState() {
   const contextUsagePercentByThreadId = ref<Record<string, number>>({})
   const accountRateLimits = ref<RateLimitSnapshot | null>(null)
   const accountRateLimitsError = ref('')
+  const gitStatusByCwd = ref<Record<string, UiGitStatus>>({})
+  const gitStatusLoadingByCwd = ref<Record<string, boolean>>({})
+  const lastGitFetchAtByCwd = ref<Record<string, number>>({})
   const readStateByThreadId = ref<Record<string, string>>(loadReadStateMap())
   const scrollStateByThreadId = ref<Record<string, ThreadScrollState>>(loadThreadScrollStateMap())
   const projectOrder = ref<string[]>(loadProjectOrder())
@@ -680,6 +686,17 @@ export function useDesktopState() {
   const selectedContextUsagePercent = computed<number | null>(
     () => contextUsagePercentByThreadId.value[selectedThreadId.value] ?? null,
   )
+  const activeGitCwd = computed(() => selectedThread.value?.cwd?.trim() ?? '')
+  const selectedThreadGitStatus = computed<UiGitStatus | null>(() => {
+    const cwd = activeGitCwd.value
+    if (!cwd) return null
+    return gitStatusByCwd.value[cwd] ?? null
+  })
+  const selectedThreadGitStatusLoading = computed(() => {
+    const cwd = activeGitCwd.value
+    if (!cwd) return false
+    return gitStatusLoadingByCwd.value[cwd] === true
+  })
   const selectedThreadServerRequests = computed<UiServerRequest[]>(() => {
     const rows: UiServerRequest[] = []
     const selected = selectedThreadId.value
@@ -779,6 +796,75 @@ export function useDesktopState() {
       }
     } catch {
       // Keep chat UI usable even if model metadata is temporarily unavailable.
+    }
+  }
+
+  async function refreshGitStatusForCwd(cwd: string, options: { force?: boolean } = {}): Promise<void> {
+    const normalized = cwd.trim()
+    if (!normalized) return
+
+    const now = Date.now()
+    const last = lastGitFetchAtByCwd.value[normalized] ?? 0
+    if (!options.force && now - last < GIT_STATUS_MIN_GAP_MS) {
+      return
+    }
+
+    gitStatusLoadingByCwd.value = {
+      ...gitStatusLoadingByCwd.value,
+      [normalized]: true,
+    }
+
+    try {
+      const status = await getGitStatus(normalized)
+      gitStatusByCwd.value = {
+        ...gitStatusByCwd.value,
+        [normalized]: status,
+      }
+      lastGitFetchAtByCwd.value = {
+        ...lastGitFetchAtByCwd.value,
+        [normalized]: now,
+      }
+    } catch (unknownError) {
+      const message = unknownError instanceof Error ? unknownError.message : 'Failed to load git status'
+      gitStatusByCwd.value = {
+        ...gitStatusByCwd.value,
+        [normalized]: {
+          ok: false,
+          cwd: normalized,
+          code: 'internal',
+          message,
+          lastUpdatedAt: Date.now(),
+        },
+      }
+    } finally {
+      gitStatusLoadingByCwd.value = omitKey(gitStatusLoadingByCwd.value, normalized)
+    }
+  }
+
+  watch(
+    activeGitCwd,
+    (cwd) => {
+      if (!cwd) return
+      void refreshGitStatusForCwd(cwd)
+    },
+    { flush: 'post' },
+  )
+
+  function patchThreadTitleInSourceGroups(threadId: string, title: string): void {
+    const normalizedTitle = title.trim()
+    if (!threadId || !normalizedTitle) return
+
+    let changed = false
+    const next = sourceGroups.value.map((group) => ({
+      ...group,
+      threads: group.threads.map((thread) => {
+        if (thread.id !== threadId) return thread
+        changed = true
+        return { ...thread, title: normalizedTitle }
+      }),
+    }))
+    if (changed) {
+      sourceGroups.value = next
     }
   }
 
@@ -1821,6 +1907,12 @@ export function useDesktopState() {
 
     try {
       await startTurnForThread(threadId, nextDraft)
+      const cwd = selectedThread.value?.cwd?.trim() ?? ''
+      if (cwd && typeof window !== 'undefined') {
+        window.setTimeout(() => {
+          void refreshGitStatusForCwd(cwd, { force: true })
+        }, 1200)
+      }
     } catch (unknownError) {
       shouldAutoScrollOnNextAgentEvent = false
       setThreadInProgress(threadId, false)
@@ -1959,13 +2051,11 @@ export function useDesktopState() {
     error.value = ''
     try {
       await setThreadNameApi(normalizedThreadId, normalizedTitle)
-      threadDisplayNameById.value = {
-        ...threadDisplayNameById.value,
-        [normalizedThreadId]: normalizedTitle,
-      }
+      patchThreadTitleInSourceGroups(normalizedThreadId, normalizedTitle)
+      threadDisplayNameById.value = omitKey(threadDisplayNameById.value, normalizedThreadId)
       saveStringRecord(THREAD_DISPLAY_NAME_STORAGE_KEY, threadDisplayNameById.value)
       applyThreadFlags()
-      pendingThreadsRefresh = true
+      await loadThreads()
       await syncFromNotifications()
     } catch (unknownError) {
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Failed to rename thread'
@@ -2057,6 +2147,11 @@ export function useDesktopState() {
       if (isInProgress || hasVersionChange) {
         await loadMessages(threadId, { silent: true })
       }
+
+      const pollCwd = activeGitCwd.value
+      if (pollCwd) {
+        void refreshGitStatusForCwd(pollCwd)
+      }
     } catch {
       // ignore poll failures and keep last known state
     } finally {
@@ -2098,6 +2193,11 @@ export function useDesktopState() {
 
       if (isActiveDirty || isInProgress || hasVersionChange || shouldRefreshThreads) {
         await loadMessages(activeThreadId, { silent: true })
+      }
+
+      const syncCwd = activeGitCwd.value
+      if (syncCwd) {
+        void refreshGitStatusForCwd(syncCwd)
       }
     } catch {
       // Keep UI stable on transient event sync failures.
@@ -2241,6 +2341,8 @@ export function useDesktopState() {
     selectedModelId,
     selectedReasoningEffort,
     selectedContextUsagePercent,
+    selectedThreadGitStatus,
+    selectedThreadGitStatusLoading,
     accountRateLimits,
     accountRateLimitsError,
     messages,

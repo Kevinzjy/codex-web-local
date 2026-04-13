@@ -119,7 +119,19 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
   return []
 }
 
+/**
+ * Prefer explicit display name from Codex (`thread/name/set`); fall back to preview (first prompt snippet).
+ * Runtime thread payloads may include `name` even when the checked-in Thread schema has not been regenerated.
+ */
 function pickThreadName(summary: Thread): string {
+  const extra = summary as Thread & { name?: unknown; title?: unknown }
+  for (const key of ['name', 'title'] as const) {
+    const value = extra[key]
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim()
+    }
+  }
+
   const direct = [summary.preview]
   for (const candidate of direct) {
     if (typeof candidate === 'string' && candidate.trim().length > 0) {

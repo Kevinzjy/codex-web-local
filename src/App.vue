@@ -82,6 +82,12 @@
     <template #content>
       <section class="content-root">
         <ContentHeader :title="contentTitle">
+          <template v-if="!isHomeRoute" #actions>
+            <GitStatusIndicator
+              :status="selectedThreadGitStatus"
+              :is-loading="selectedThreadGitStatusLoading"
+            />
+          </template>
           <template #leading>
             <SidebarThreadControls
               v-if="isSidebarCollapsed"
@@ -173,6 +179,7 @@ import ApprovalRequestsPanel from './components/content/ApprovalRequestsPanel.vu
 import ComposerDropdown from './components/content/ComposerDropdown.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
 import SidebarRateLimitMeters from './components/sidebar/SidebarRateLimitMeters.vue'
+import GitStatusIndicator from './components/content/GitStatusIndicator.vue'
 import IconTablerSearch from './components/icons/IconTablerSearch.vue'
 import IconTablerMoon from './components/icons/IconTablerMoon.vue'
 import IconTablerSun from './components/icons/IconTablerSun.vue'
@@ -211,6 +218,8 @@ const {
   selectedModelId,
   selectedReasoningEffort,
   selectedContextUsagePercent,
+  selectedThreadGitStatus,
+  selectedThreadGitStatusLoading,
   accountRateLimits,
   accountRateLimitsError,
   messages,

@@ -126,6 +126,46 @@ export type UiProjectGroup = {
   threads: UiThread[]
 }
 
+export type UiGitStatusNotRepo = {
+  ok: true
+  cwd: string
+  isRepo: false
+  reason: 'not_git_repo' | 'not_allowed' | 'not_found'
+  lastUpdatedAt: number
+}
+
+export type UiGitStatusRepo = {
+  ok: true
+  cwd: string
+  isRepo: true
+  branch: string | null
+  headShortSha: string | null
+  detached: boolean
+  dirty: boolean
+  /** Distinct paths in `git status --porcelain` (rename may count two paths). */
+  uniquePaths: number
+  /** Insertion lines vs HEAD (`git diff HEAD --numstat`). */
+  lineInsertions: number
+  /** Deletion lines vs HEAD (`git diff HEAD --numstat`). */
+  lineDeletions: number
+  staged: number
+  unstaged: number
+  untracked: number
+  ahead: number
+  behind: number
+  lastUpdatedAt: number
+}
+
+export type UiGitStatusError = {
+  ok: false
+  cwd: string
+  code: 'timeout' | 'spawn_failed' | 'parse_failed' | 'internal'
+  message: string
+  lastUpdatedAt: number
+}
+
+export type UiGitStatus = UiGitStatusNotRepo | UiGitStatusRepo | UiGitStatusError
+
 export type ThreadScrollState = {
   scrollTop: number
   isAtBottom: boolean

@@ -1,4 +1,4 @@
-import type { RpcEnvelope, RpcMethodCatalog, UiServerRequestId } from '../types/codex'
+import type { RpcEnvelope, RpcMethodCatalog, UiGitStatus, UiServerRequestId } from '../types/codex'
 import { CodexApiError, extractErrorMessage } from './codexErrors'
 
 type RpcRequestBody = {
@@ -199,6 +199,39 @@ export async function respondServerRequest(body: ServerRequestReplyBody): Promis
       },
     )
   }
+}
+
+export async function fetchGitStatus(cwd: string): Promise<UiGitStatus> {
+  const encoded = encodeURIComponent(cwd)
+  let response: Response
+  try {
+    response = await fetch(`/codex-api/git/status?cwd=${encoded}`)
+  } catch (error) {
+    throw new CodexApiError(
+      error instanceof Error ? error.message : 'Git status request failed before it was sent',
+      { code: 'network_error', method: 'git/status' },
+    )
+  }
+
+  let payload: unknown = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+
+  if (!response.ok) {
+    throw new CodexApiError(
+      extractErrorMessage(payload, `Git status failed with HTTP ${String(response.status)}`),
+      {
+        code: 'http_error',
+        method: 'git/status',
+        status: response.status,
+      },
+    )
+  }
+
+  return payload as UiGitStatus
 }
 
 export async function fetchPendingServerRequests(): Promise<unknown[]> {

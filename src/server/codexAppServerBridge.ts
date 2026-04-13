@@ -1,4 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { cwdIsKnownCodexWorkspace } from './codexThreadGitAllowance.js'
+import { getGitStatusForCwd } from './gitStatus.js'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -591,6 +593,21 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
       if (req.method === 'GET' && url.pathname === '/codex-api/meta/notifications') {
         const methods = await methodCatalog.listNotificationMethods()
         setJson(res, 200, { data: methods })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/git/status') {
+        const cwd = url.searchParams.get('cwd') ?? ''
+        if (!cwd.trim()) {
+          setJson(res, 400, { error: 'Missing cwd query parameter' })
+          return
+        }
+
+        const payload = await getGitStatusForCwd(cwd, {
+          allowIfKnownCodexCwd: async ({ resolved, requested }) =>
+            cwdIsKnownCodexWorkspace((method, params) => appServer.rpc(method, params), resolved, requested),
+        })
+        setJson(res, 200, payload)
         return
       }
 
