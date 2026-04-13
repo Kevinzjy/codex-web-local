@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+html,
+body {
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+#app {
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
 [data-theme='dark'] {
   color-scheme: dark;
 }

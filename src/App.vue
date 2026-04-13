@@ -627,7 +627,7 @@ async function submitFirstMessageForNewThread(draft: UiComposerDraft): Promise<v
 }
 
 .content-root {
-  @apply h-full min-h-0 w-full flex flex-col overflow-y-hidden overflow-x-visible bg-white;
+  @apply h-full min-h-0 w-full min-w-0 flex flex-col overflow-y-hidden overflow-x-hidden bg-white;
 }
 
 .sidebar-thread-controls-host {
@@ -694,7 +694,7 @@ async function submitFirstMessageForNewThread(draft: UiComposerDraft): Promise<v
 }
 
 .content-body {
-  @apply flex-1 min-h-0 w-full flex flex-col gap-3 pt-1 pb-4 overflow-y-hidden overflow-x-visible;
+  @apply flex-1 min-h-0 w-full min-w-0 flex flex-col gap-3 pt-1 pb-4 overflow-y-hidden overflow-x-hidden;
 }
 
 .content-error {
@@ -702,11 +702,11 @@ async function submitFirstMessageForNewThread(draft: UiComposerDraft): Promise<v
 }
 
 .content-grid {
-  @apply flex-1 min-h-0 flex flex-col gap-3;
+  @apply flex-1 min-h-0 min-w-0 flex flex-col gap-3;
 }
 
 .content-thread {
-  @apply flex-1 min-h-0;
+  @apply flex-1 min-h-0 min-w-0;
 }
 
 .new-thread-empty {

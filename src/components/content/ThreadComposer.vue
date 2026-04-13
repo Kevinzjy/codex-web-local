@@ -344,7 +344,7 @@ watch(
 @reference "tailwindcss";
 
 .thread-composer {
-  @apply w-full max-w-175 mx-auto px-6;
+  @apply w-full min-w-0 max-w-175 mx-auto px-6;
 }
 
 .thread-composer-shell {

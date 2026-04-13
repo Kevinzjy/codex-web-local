@@ -813,7 +813,7 @@ onBeforeUnmount(() => {
 @reference "tailwindcss";
 
 .conversation-root {
-  @apply h-full min-h-0 p-0 flex flex-col overflow-y-hidden overflow-x-visible bg-transparent border-none rounded-none;
+  @apply h-full min-h-0 min-w-0 p-0 flex flex-col overflow-y-hidden overflow-x-hidden bg-transparent border-none rounded-none;
 }
 
 .conversation-loading {
@@ -825,11 +825,11 @@ onBeforeUnmount(() => {
 }
 
 .conversation-list {
-  @apply h-full min-h-0 list-none m-0 px-6 py-0 overflow-y-auto overflow-x-visible flex flex-col gap-3;
+  @apply h-full min-h-0 min-w-0 list-none m-0 px-6 py-0 overflow-y-auto overflow-x-hidden flex flex-col gap-3;
 }
 
 .conversation-item {
-  @apply m-0 w-full flex;
+  @apply m-0 w-full min-w-0 flex;
 }
 
 .conversation-item-request {
@@ -841,7 +841,7 @@ onBeforeUnmount(() => {
 }
 
 .message-row {
-  @apply relative w-full max-w-180 mx-auto flex;
+  @apply relative w-full min-w-0 max-w-180 mx-auto flex;
 }
 
 .message-row[data-role='user'] {
@@ -858,7 +858,7 @@ onBeforeUnmount(() => {
 }
 
 .message-stack {
-  @apply flex flex-col w-full;
+  @apply flex flex-col w-full min-w-0;
 }
 
 .request-card {
@@ -930,7 +930,7 @@ onBeforeUnmount(() => {
 }
 
 .message-body {
-  @apply flex flex-col max-w-full;
+  @apply flex flex-col max-w-full min-w-0;
   width: fit-content;
 }
 
@@ -964,7 +964,8 @@ onBeforeUnmount(() => {
 }
 
 .message-text {
-  @apply m-0 text-sm leading-relaxed whitespace-pre-wrap text-slate-800;
+  @apply m-0 text-sm leading-relaxed whitespace-pre-wrap break-words text-slate-800;
+  overflow-wrap: anywhere;
 }
 
 .message-inline-code {
