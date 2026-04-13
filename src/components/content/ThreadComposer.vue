@@ -21,13 +21,29 @@
         rows="1"
         :placeholder="placeholderText"
         :disabled="disabled || !activeThreadId || isTurnInProgress"
+        :readonly="isSpeechListening"
         @keydown="onInputKeydown"
         @compositionstart="onCompositionStart"
         @compositionend="onCompositionEnd"
         @paste="onPaste"
       />
 
+      <p
+        v-if="speechStatusVisible"
+        class="thread-composer-speech-status"
+        role="status"
+        aria-live="polite"
+      >
+        <template v-if="isSpeechStarting">Requesting microphone… Allow access if the browser asks.</template>
+        <template v-else>Listening — speak now. Tap the mic again to stop.</template>
+      </p>
+
+      <p v-if="isLikelyIOS()" class="thread-composer-ios-voice-note">
+        Voice input is not available on iOS. Use the keyboard or a desktop browser.
+      </p>
+
       <p v-if="imageError" class="thread-composer-image-error" role="status">{{ imageError }}</p>
+      <p v-if="speechError" class="thread-composer-speech-error" role="status">{{ speechError }}</p>
 
       <input
         ref="imageInputRef"
@@ -80,25 +96,43 @@
           {{ contextUsageLabel }}
         </span>
 
-        <button
-          v-if="isTurnInProgress"
-          class="thread-composer-stop"
-          type="button"
-          aria-label="Стоп"
-          :disabled="disabled || !activeThreadId || isInterruptingTurn"
-          @click="onInterrupt"
-        >
-          <IconTablerPlayerStopFilled class="thread-composer-stop-icon" />
-        </button>
-        <button
-          v-else
-          class="thread-composer-submit"
-          type="submit"
-          aria-label="Send message"
-          :disabled="!canSubmit"
-        >
-          <IconTablerArrowUp class="thread-composer-submit-icon" />
-        </button>
+        <div class="thread-composer-send-group">
+          <button
+            class="thread-composer-mic"
+            type="button"
+            :class="{
+              'thread-composer-mic--listening': isSpeechListening,
+              'thread-composer-mic--starting': isSpeechStarting,
+            }"
+            :aria-pressed="isSpeechListening"
+            :aria-label="speechButtonLabel"
+            :title="speechButtonTitle"
+            :disabled="!canUseSpeech"
+            @click="onSpeechToggle"
+          >
+            <IconTablerMicrophone class="thread-composer-mic-icon" />
+          </button>
+
+          <button
+            v-if="isTurnInProgress"
+            class="thread-composer-stop"
+            type="button"
+            aria-label="Стоп"
+            :disabled="disabled || !activeThreadId || isInterruptingTurn"
+            @click="onInterrupt"
+          >
+            <IconTablerPlayerStopFilled class="thread-composer-stop-icon" />
+          </button>
+          <button
+            v-else
+            class="thread-composer-submit"
+            type="submit"
+            aria-label="Send message"
+            :disabled="!canSubmit"
+          >
+            <IconTablerArrowUp class="thread-composer-submit-icon" />
+          </button>
+        </div>
       </div>
     </div>
   </form>
@@ -107,8 +141,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { ReasoningEffort, UiComposerDraft, UiComposerImage } from '../../types/codex'
+import { useWebSpeechRecognition } from '../../composables/useWebSpeechRecognition'
+import { isLikelyIOS } from '../../utils/platform'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
 import IconTablerPlayerStopFilled from '../icons/IconTablerPlayerStopFilled.vue'
+import IconTablerMicrophone from '../icons/IconTablerMicrophone.vue'
 import IconTablerPlus from '../icons/IconTablerPlus.vue'
 import ComposerDropdown from './ComposerDropdown.vue'
 
@@ -164,6 +201,33 @@ const placeholderText = computed(() =>
 )
 
 const canEdit = computed(() => !props.disabled && props.activeThreadId.length > 0 && !props.isTurnInProgress)
+
+const speech = useWebSpeechRecognition()
+const isSpeechListening = speech.isListening
+const isSpeechStarting = speech.isStarting
+const speechError = speech.errorMessage
+const canUseSpeech = computed(() => canEdit.value && speech.isSupported)
+const speechStatusVisible = computed(() => isSpeechStarting.value || isSpeechListening.value)
+const speechButtonLabel = computed(() => {
+  if (!canEdit.value) return 'Voice input'
+  if (!speech.isSupported) {
+    return isLikelyIOS() ? 'Voice unavailable on iOS' : 'Voice input unavailable'
+  }
+  if (isSpeechStarting.value) return 'Cancel microphone setup'
+  if (isSpeechListening.value) return 'Stop voice input'
+  return 'Voice input'
+})
+const speechButtonTitle = computed(() => {
+  if (!canEdit.value) return 'Select a thread to use voice input'
+  if (!speech.isSupported) {
+    return isLikelyIOS()
+      ? 'Web Speech API is not available on iOS (WebKit). Use the keyboard or a desktop browser.'
+      : 'Voice input is not supported in this browser.'
+  }
+  if (isSpeechStarting.value) return 'Tap to cancel while the microphone prompt is open'
+  if (isSpeechListening.value) return 'Stop dictation'
+  return 'Start dictation (browser speech recognition)'
+})
 const contextUsageLabel = computed(() => {
   const percent = props.contextUsagePercent
   if (typeof percent !== 'number' || !Number.isFinite(percent)) return ''
@@ -309,7 +373,16 @@ function onInputKeydown(event: KeyboardEvent): void {
   onSubmit()
 }
 
+async function onSpeechToggle(): Promise<void> {
+  if (!canUseSpeech.value) return
+  speech.clearError()
+  await speech.toggle(draft.value, (next) => {
+    draft.value = next
+  })
+}
+
 function onSubmit(): void {
+  speech.stop()
   const text = draft.value.trim()
   if (!canSubmit.value) return
   emit('submit', { text, images: images.value })
@@ -333,6 +406,8 @@ function onReasoningEffortSelect(value: string): void {
 watch(
   () => props.activeThreadId,
   () => {
+    speech.stop()
+    speech.clearError()
     draft.value = ''
     images.value = []
     imageError.value = ''
@@ -363,6 +438,10 @@ watch(
   @apply bg-zinc-100 text-zinc-500 cursor-not-allowed;
 }
 
+.thread-composer-input[readonly] {
+  @apply cursor-default;
+}
+
 .thread-composer-image-list {
   @apply mb-3 flex list-none flex-wrap gap-2 p-0;
 }
@@ -383,6 +462,26 @@ watch(
   @apply mt-1 text-xs text-red-600;
 }
 
+.thread-composer-speech-error {
+  @apply mt-1 text-xs text-red-600;
+}
+
+.thread-composer-speech-status {
+  @apply mt-2 text-sm font-medium text-zinc-600;
+}
+
+.thread-composer-mic--starting {
+  @apply border-zinc-200 bg-zinc-100 text-zinc-700;
+}
+
+.thread-composer-mic--starting .thread-composer-mic-icon {
+  @apply animate-pulse;
+}
+
+.thread-composer-ios-voice-note {
+  @apply mt-2 text-xs leading-snug text-zinc-500;
+}
+
 .thread-composer-controls {
   @apply mt-3 flex items-center gap-4;
 }
@@ -396,6 +495,26 @@ watch(
 }
 
 .thread-composer-add-files-icon {
+  @apply h-5 w-5;
+}
+
+.thread-composer-mic {
+  @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:pointer-events-none;
+}
+
+.thread-composer-mic:disabled {
+  @apply cursor-not-allowed opacity-35 text-zinc-300 hover:bg-transparent;
+}
+
+.thread-composer-mic:disabled:hover {
+  @apply bg-transparent text-zinc-300;
+}
+
+.thread-composer-mic--listening {
+  @apply border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 hover:text-rose-800;
+}
+
+.thread-composer-mic-icon {
   @apply h-5 w-5;
 }
 
@@ -415,8 +534,12 @@ watch(
   @apply text-rose-600;
 }
 
+.thread-composer-send-group {
+  @apply ml-auto flex shrink-0 items-center gap-2;
+}
+
 .thread-composer-submit {
-  @apply ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-0 bg-zinc-900 text-white transition hover:bg-black disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500;
+  @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-0 bg-zinc-900 text-white transition hover:bg-black disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500;
 }
 
 .thread-composer-submit-icon {
@@ -424,7 +547,7 @@ watch(
 }
 
 .thread-composer-stop {
-  @apply ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-0 bg-zinc-900 text-white transition hover:bg-black disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500;
+  @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-0 bg-zinc-900 text-white transition hover:bg-black disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500;
 }
 
 .thread-composer-stop-icon {

@@ -64,7 +64,35 @@ The installed CLI also accepts proxy flags that are passed to `codex app-server`
 - File links are displayed as paths relative to the active thread cwd when possible, matching the Codex CLI style more closely than basename-only rendering.
 - The composer uses a textarea. `Enter` submits, `Shift+Enter` inserts a newline, and IME composition Enter is not submitted.
 
+## Recently shipped (do not duplicate in backlog below)
+
+These are already in the tree; the follow-up plan only lists **remaining** work.
+
+- **App icon:** `favicon.svg` at the repo root, linked from `index.html` (`/favicon.svg`); included in Vite build output.
+- **Git status in the header:** `GitStatusIndicator` + `GET /codex-api/git/status` (`src/server/gitStatus.ts`) — branch name, dirty/clean, detached HEAD, not-a-repo, and errors without blocking the UI.
+- **Account quota / rate limits:** `SidebarRateLimitMeters` + `account/rateLimits/read` RPC, with live updates from `account/rateLimits/updated` notifications.
+- **Per-thread context usage:** Composer shows context usage percent from `thread/tokenUsage/updated` (when available).
+- **Persisted chat UI state:** `src/server/chatStateStore.ts` → `~/.config/codex-web-local/chat-state.json`; `GET`/`PATCH /codex-api/chat-state` for pins, collapsed projects, project order, display names, manual unread (with cache-busting so reload does not wipe state).
+- **Sidebar layout / scrolling:** Pin section and **Threads** label stay fixed; only the project/thread list scrolls; shared `.codex-subtle-scroll` styling (conversation list uses the same pattern).
+- **Composer attachments (images):** `+` button and paste attach images (PNG/JPEG/WebP/GIF) with size/count limits; not the same as attaching arbitrary non-image files or a server-side upload pipeline.
+- **Voice input (phase 1):** Composer microphone uses the browser **Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`) for dictation into the draft. No server-side audio; optional LLM “polish” is a separate future step.
+
 ## Follow-Up Development Plan
+
+Items are grouped by **priority** (rough order to tackle). Higher tiers deliver core workflow or unblock other work; lower tiers are larger or higher-risk efforts.
+
+### Priority overview
+
+| Tier | Focus |
+|------|--------|
+| **P1 — Next up** | New-chat project picker + read-only `fs` API (foundation for remote “choose folder”). |
+| **P2 — Soon** | Extend composer beyond **image-only** attachments (if desired); small git/quota UX polish only where gaps appear. |
+| **P3 — Later** | Message queueing; voice input. |
+| **P4 — Deferred / high complexity** | Optional HTTPS + system notifications; remote terminal. |
+
+---
+
+### P1 — Server-side directory picker (next major feature)
 
 - Replace the manual New chat "Add new project" text entry with a remote server-side directory picker.
 - The directory picker should browse directories on the machine running `codex-web-local`, not the browser client machine.
@@ -86,28 +114,61 @@ The installed CLI also accepts proxy flags that are passed to `codex app-server`
   - Include search/filter within the current directory.
   - Include a manual path field for paste/edit fallback.
   - "Choose this folder" should set `newThreadCwd` and add the selected cwd to the New chat project options for the current session.
-- Add an upload file button to the composer.
-  - Decide whether uploaded files should become Codex attachments, be written to a temporary server-side upload directory, or be pasted into the prompt as text/image content.
-  - Keep image paste behavior in `ThreadComposer.vue` working while adding file upload UI.
-- Add voice input to the composer.
-  - Start with browser speech recognition only if the target browsers support it well enough.
-  - Keep a text fallback and avoid sending audio to third-party services without an explicit user-visible opt-in.
-  - Clarify whether voice should append to the current draft, replace the draft, or insert at the cursor.
+
+**Rationale:** Matches the product goal (remote browser + correct host paths). Other features do not depend on it except indirectly (better onboarding).
+
+---
+
+### P2 — Composer and observability (remaining)
+
+- **Composer — beyond images (optional product decision):** Today the composer supports **images** only (`ThreadComposer.vue`: file picker + paste). If needed, extend to non-image files (Codex attachments vs temp server path vs paste-as-text), without breaking existing image behavior.
+- **Git / quota — polish only:** Core git header and sidebar quota meters are shipped (see **Recently shipped**). File follow-ups only if a concrete gap appears (e.g. richer diff stats, copy branch name).
+
+**Rationale:** P2 is now mostly incremental; main greenfield item is optional non-image attachment behavior.
+
+---
+
+### P3 — Larger UX features
+
 - Add message queueing and priority insertion.
   - Allow composing messages while a turn is in progress instead of forcing the user to wait.
   - Queue normal messages behind the current turn.
   - Provide an explicit "send next" or "interrupt and send" path for priority insertion.
   - Make queue state visible in the composer and keep cancellation/removal straightforward.
+- Voice input — **phase 2 (LLM polish)** only:
+  - Phase 2 prompt-polish (LLM rewrite) is **disabled by default**.
+  - Enable phase 2 only when **both** a polish API URL and API key are configured; if either is missing, keep transcript as-is with no automatic rewrite.
+  - Keep a text fallback and avoid sending audio to third-party services without an explicit user-visible opt-in.
+  - Clarify whether voice should append to the current draft, replace the draft, or insert at the cursor.
+
+**Rationale:** Queueing and voice are valuable but need careful UX.
+
+---
+
+### P4 — Deferred: HTTPS and system notifications (approval alerts)
+
+**Goal:** Enable **Web Notifications** for pending approvals when the tab is in the background. Browsers require a **secure context** (`https://` or `http://localhost` / `127.0.0.1`); plain `http://` to a LAN or Tailscale IP is often **not** sufficient.
+
+**Planned steps (implement after P1/P2 unless reprioritized):**
+
+1. **TLS for the app server (Express + Vite dev)**
+   - Configurable PEM paths (env or CLI), e.g. `CODEX_WEB_TLS_CERT` / `CODEX_WEB_TLS_KEY`.
+   - Optional: auto-generated self-signed certs under `~/.config/codex-web-local/tls/` with SAN for chosen hosts/IPs; document **mkcert** for a trusted local CA (better UX than perpetual cert warnings).
+   - Document Tailscale / LAN access: cert SAN must match how users open the URL.
+
+2. **Notifications**
+   - User preference + `Notification.requestPermission()` (clear opt-in).
+   - When `pendingApprovalRequests` grows and the document is hidden or unfocused, fire a deduplicated `Notification` (e.g. `tag`); click focuses the window; approval still happens in-app.
+
+**Rationale:** Cross-cuts CLI, server, docs, and browser policy; lower priority than the directory picker and composer improvements unless remote approval pain dominates.
+
+---
+
+### P4 — Remote terminal (high risk, separate track)
+
 - Add a remote terminal window.
   - Treat this as a high-risk feature because it executes commands on the host running `codex-web-local`.
   - Reuse existing password auth and consider an explicit enable flag before exposing terminal access.
   - Prefer a PTY-backed implementation with clear session lifecycle, resize support, and command output streaming.
-- Add git branch and git status indicators.
-  - Show the branch/status for the active thread cwd when available.
-  - Handle missing git repos, detached HEAD, and slow git commands without blocking the UI.
-  - Consider reusing a server-side endpoint rather than running git in the browser.
-- Add Codex quota/usage display.
-  - First identify whether `codex app-server` exposes quota information over JSON-RPC.
-  - If unavailable, document the limitation rather than scraping unstable CLI output.
-- Update the favicon.
-  - Replace the default app icon assets and verify both dev and built output use the new icon.
+
+**Rationale:** Security and maintenance cost; keep isolated from P1–P3 unless explicitly prioritized.

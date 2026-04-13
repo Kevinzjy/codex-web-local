@@ -1,16 +1,36 @@
 @import "tailwindcss";
 
-html,
-body {
-  overflow-x: hidden;
+html {
+  overflow-x: clip;
   max-width: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+  min-height: 100%;
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
 }
 
 #app {
-  min-height: 100vh;
-  min-height: 100dvh;
-  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
   max-width: 100%;
+  min-height: 100%;
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+  overflow-x: clip;
+}
+
+#app > * {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
 }
 
 [data-theme='dark'] {
@@ -263,7 +283,9 @@ body {
 }
 
 [data-theme='dark'] .thread-composer-add-files,
-[data-theme='dark'] .thread-composer-add-files.thread-composer-add-files {
+[data-theme='dark'] .thread-composer-add-files.thread-composer-add-files,
+[data-theme='dark'] .thread-composer-mic,
+[data-theme='dark'] .thread-composer-mic.thread-composer-mic {
   color: #c6c7c9;
 }
 
@@ -279,13 +301,48 @@ body {
   color: #fb7185;
 }
 
-[data-theme='dark'] .thread-composer-add-files:hover {
+[data-theme='dark'] .thread-composer-add-files:hover,
+[data-theme='dark'] .thread-composer-mic:hover {
   background: rgba(255, 255, 255, 0.1);
   color: #f4f4f5;
 }
 
-[data-theme='dark'] .thread-composer-add-files:disabled {
-  color: #555a5f;
+[data-theme='dark'] .thread-composer-mic--listening,
+[data-theme='dark'] .thread-composer-mic--listening.thread-composer-mic--listening {
+  border-color: rgba(251, 113, 133, 0.45);
+  background: rgba(251, 113, 133, 0.12);
+  color: #fecdd3;
+}
+
+[data-theme='dark'] .thread-composer-mic--listening:hover {
+  background: rgba(251, 113, 133, 0.2);
+  color: #ffe4e6;
+}
+
+[data-theme='dark'] .thread-composer-add-files:disabled,
+[data-theme='dark'] .thread-composer-mic:disabled {
+  color: #3f4246;
+  opacity: 0.38;
+}
+
+[data-theme='dark'] .thread-composer-mic:disabled:hover {
+  background: transparent;
+  color: #3f4246;
+}
+
+[data-theme='dark'] .thread-composer-speech-status.thread-composer-speech-status {
+  color: #a1a1aa;
+}
+
+[data-theme='dark'] .thread-composer-mic--starting,
+[data-theme='dark'] .thread-composer-mic--starting.thread-composer-mic--starting {
+  border-color: #3a3d40;
+  background: #242629;
+  color: #d4d4d8;
+}
+
+[data-theme='dark'] .thread-composer-ios-voice-note.thread-composer-ios-voice-note {
+  color: #a1a1aa;
 }
 
 [data-theme='dark'] .thread-composer-submit,

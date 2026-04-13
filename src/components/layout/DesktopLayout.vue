@@ -91,7 +91,16 @@ function onResizeHandleMouseDown(event: MouseEvent): void {
 @reference "tailwindcss";
 
 .desktop-layout {
-  @apply h-screen grid bg-slate-100 text-slate-900 overflow-hidden;
+  @apply box-border w-full max-w-[100%] grid bg-slate-100 text-slate-900 overflow-hidden;
+  min-height: 100vh;
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+  height: 100dvh;
+  max-height: 100dvh;
+  padding-top: env(safe-area-inset-top, 0);
+  padding-right: env(safe-area-inset-right, 0);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  padding-left: env(safe-area-inset-left, 0);
   grid-template-columns: var(--layout-columns);
 }
 

@@ -687,7 +687,8 @@ async function submitFirstMessageForNewThread(draft: UiComposerDraft): Promise<v
 }
 
 .content-body {
-  @apply flex-1 min-h-0 w-full min-w-0 flex flex-col gap-3 pt-1 pb-4 overflow-y-hidden overflow-x-hidden;
+  @apply flex-1 min-h-0 w-full min-w-0 flex flex-col gap-3 pt-1 overflow-y-hidden overflow-x-hidden;
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
 }
 
 .content-error {
