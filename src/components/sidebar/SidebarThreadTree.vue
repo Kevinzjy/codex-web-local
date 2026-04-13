@@ -7,12 +7,14 @@
             class="thread-row"
             :data-active="thread.id === selectedThreadId"
             :data-pinned="isPinned(thread.id)"
+            :force-right-hover="isThreadMenuOpen(thread.id)"
+            @contextmenu.prevent="onThreadContextMenu($event, thread)"
             @mouseleave="onThreadRowLeave(thread.id)"
           >
             <template #left>
               <span class="thread-left-stack">
                 <span v-if="thread.inProgress || thread.unread" class="thread-status-indicator" :data-state="getThreadState(thread)" />
-                <button class="thread-pin-button" type="button" title="pin" @click="togglePin(thread.id)">
+                <button class="thread-pin-button" type="button" title="pin" @click.stop="togglePin(thread.id)">
                   <IconTablerPin class="thread-icon" />
                 </button>
               </span>
@@ -144,6 +146,8 @@
                 class="thread-row"
                 :data-active="thread.id === selectedThreadId"
                 :data-pinned="isPinned(thread.id)"
+                :force-right-hover="isThreadMenuOpen(thread.id)"
+                @contextmenu.prevent="onThreadContextMenu($event, thread)"
                 @mouseleave="onThreadRowLeave(thread.id)"
               >
                 <template #left>
@@ -153,7 +157,7 @@
                       class="thread-status-indicator"
                       :data-state="getThreadState(thread)"
                     />
-                    <button class="thread-pin-button" type="button" title="pin" @click="togglePin(thread.id)">
+                    <button class="thread-pin-button" type="button" title="pin" @click.stop="togglePin(thread.id)">
                       <IconTablerPin class="thread-icon" />
                     </button>
                   </span>
@@ -197,11 +201,50 @@
           </SidebarMenuRow>
       </article>
     </div>
+
+    <div
+      v-if="openThreadMenu"
+      ref="threadMenuPanelRef"
+      class="thread-context-menu"
+      :style="threadMenuStyle"
+      @click.stop
+      @contextmenu.prevent.stop
+    >
+      <template v-if="openThreadMenu.mode === 'actions'">
+        <button class="thread-context-menu-item" type="button" @click="onThreadMenuTogglePin">
+          {{ openThreadMenuThread && isPinned(openThreadMenuThread.id) ? 'Unpin chat' : 'Pin chat' }}
+        </button>
+        <button class="thread-context-menu-item" type="button" @click="openThreadRenameMenu">
+          Rename chat
+        </button>
+        <button class="thread-context-menu-item" type="button" @click="onThreadMenuArchive">
+          Archive chat
+        </button>
+        <button class="thread-context-menu-item" type="button" @click="onThreadMenuToggleUnread">
+          {{ openThreadMenuThread?.unread ? 'Mark as read' : 'Mark as unread' }}
+        </button>
+      </template>
+      <form v-else class="thread-context-rename-form" @submit.prevent="submitThreadRename">
+        <label class="thread-context-menu-label" for="thread-rename-input">Chat name</label>
+        <input
+          id="thread-rename-input"
+          ref="threadRenameInputRef"
+          v-model="threadRenameDraft"
+          class="thread-context-menu-input"
+          type="text"
+          @keydown.escape.prevent="closeThreadMenu"
+        />
+        <div class="thread-context-menu-actions">
+          <button class="thread-context-menu-item" type="submit">Save</button>
+          <button class="thread-context-menu-item" type="button" @click="closeThreadMenu">Cancel</button>
+        </div>
+      </form>
+    </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import type { UiProjectGroup, UiThread } from '../../types/codex'
 import IconTablerArchive from '../icons/IconTablerArchive.vue'
@@ -225,6 +268,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [threadId: string]
   archive: [threadId: string]
+  'rename-thread': [payload: { threadId: string; title: string }]
+  'mark-thread-unread': [threadId: string]
+  'mark-thread-read': [threadId: string]
   'start-new-thread': [projectName: string]
   'rename-project': [payload: { projectName: string; displayName: string }]
   'remove-project': [projectName: string]
@@ -260,16 +306,30 @@ type DragPointerSample = {
   clientY: number
 }
 
+type ThreadMenuState = {
+  threadId: string
+  x: number
+  y: number
+  mode: 'actions' | 'rename'
+}
+
 const DRAG_START_THRESHOLD_PX = 4
 const PROJECT_GROUP_EXPANDED_GAP_PX = 6
+const PINNED_THREADS_STORAGE_KEY = 'codex-web-local.pinned-threads.v1'
+const THREAD_MENU_WIDTH_PX = 220
+const THREAD_MENU_MAX_HEIGHT_PX = 240
 const expandedProjects = ref<Record<string, boolean>>({})
 const collapsedProjects = ref<Record<string, boolean>>({})
 const pinnedThreadIds = ref<string[]>([])
 const archiveConfirmThreadId = ref('')
 const openProjectMenuId = ref('')
+const openThreadMenu = ref<ThreadMenuState | null>(null)
 const projectMenuMode = ref<'actions' | 'rename'>('actions')
 const projectRenameDraft = ref('')
+const threadRenameDraft = ref('')
 const groupsContainerRef = ref<HTMLElement | null>(null)
+const threadMenuPanelRef = ref<HTMLElement | null>(null)
+const threadRenameInputRef = ref<HTMLInputElement | null>(null)
 const pendingProjectDrag = ref<PendingProjectDrag | null>(null)
 const activeProjectDrag = ref<ActiveProjectDrag | null>(null)
 let pendingDragPointerSample: DragPointerSample | null = null
@@ -306,13 +366,44 @@ function loadCollapsedState(): Record<string, boolean> {
   }
 }
 
+function loadPinnedThreadIds(): string[] {
+  if (typeof window === 'undefined') return []
+
+  try {
+    const raw = window.localStorage.getItem(PINNED_THREADS_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+
+    const threadIds: string[] = []
+    for (const item of parsed) {
+      if (typeof item === 'string' && item.length > 0 && !threadIds.includes(item)) {
+        threadIds.push(item)
+      }
+    }
+    return threadIds
+  } catch {
+    return []
+  }
+}
+
 collapsedProjects.value = loadCollapsedState()
+pinnedThreadIds.value = loadPinnedThreadIds()
 
 watch(
   collapsedProjects,
   (value) => {
     if (typeof window === 'undefined') return
     window.localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(value))
+  },
+  { deep: true },
+)
+
+watch(
+  pinnedThreadIds,
+  (value) => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(PINNED_THREADS_STORAGE_KEY, JSON.stringify(value))
   },
   { deep: true },
 )
@@ -358,6 +449,20 @@ const pinnedThreads = computed(() =>
     .filter((thread): thread is UiThread => thread !== null)
     .filter(threadMatchesSearch),
 )
+
+const openThreadMenuThread = computed(() => {
+  const threadId = openThreadMenu.value?.threadId
+  return threadId ? threadById.value.get(threadId) ?? null : null
+})
+
+const threadMenuStyle = computed<Record<string, string>>(() => {
+  const menu = openThreadMenu.value
+  if (!menu) return { left: '0px', top: '0px' }
+  return {
+    left: `${menu.x}px`,
+    top: `${menu.y}px`,
+  }
+})
 
 const projectedDropProjectIndex = computed<number | null>(() => {
   const drag = activeProjectDrag.value
@@ -441,6 +546,95 @@ function togglePin(threadId: string): void {
   pinnedThreadIds.value = [threadId, ...pinnedThreadIds.value]
 }
 
+function clampThreadMenuPosition(clientX: number, clientY: number): { x: number; y: number } {
+  if (typeof window === 'undefined') {
+    return { x: clientX, y: clientY }
+  }
+
+  return {
+    x: Math.max(8, Math.min(clientX, window.innerWidth - THREAD_MENU_WIDTH_PX - 8)),
+    y: Math.max(8, Math.min(clientY, window.innerHeight - THREAD_MENU_MAX_HEIGHT_PX - 8)),
+  }
+}
+
+function isThreadMenuOpen(threadId: string): boolean {
+  return openThreadMenu.value?.threadId === threadId
+}
+
+function openThreadMenuForThread(thread: UiThread, clientX: number, clientY: number): void {
+  closeProjectMenu()
+  const position = clampThreadMenuPosition(clientX, clientY)
+  openThreadMenu.value = {
+    threadId: thread.id,
+    x: position.x,
+    y: position.y,
+    mode: 'actions',
+  }
+  threadRenameDraft.value = thread.title
+}
+
+function onThreadContextMenu(event: MouseEvent, thread: UiThread): void {
+  openThreadMenuForThread(thread, event.clientX, event.clientY)
+}
+
+function closeThreadMenu(): void {
+  openThreadMenu.value = null
+  threadRenameDraft.value = ''
+}
+
+function onThreadMenuTogglePin(): void {
+  const thread = openThreadMenuThread.value
+  if (!thread) return
+  togglePin(thread.id)
+  closeThreadMenu()
+}
+
+function openThreadRenameMenu(): void {
+  const thread = openThreadMenuThread.value
+  const menu = openThreadMenu.value
+  if (!thread || !menu) return
+  threadRenameDraft.value = thread.title
+  openThreadMenu.value = {
+    ...menu,
+    mode: 'rename',
+  }
+  nextTick(() => {
+    threadRenameInputRef.value?.focus()
+    threadRenameInputRef.value?.select()
+  })
+}
+
+function submitThreadRename(): void {
+  const thread = openThreadMenuThread.value
+  const title = threadRenameDraft.value.trim()
+  if (!thread || !title) return
+  emit('rename-thread', {
+    threadId: thread.id,
+    title,
+  })
+  closeThreadMenu()
+}
+
+function onThreadMenuArchive(): void {
+  const thread = openThreadMenuThread.value
+  if (!thread) return
+  pinnedThreadIds.value = pinnedThreadIds.value.filter((id) => id !== thread.id)
+  archiveConfirmThreadId.value = ''
+  emit('archive', thread.id)
+  closeThreadMenu()
+}
+
+function onThreadMenuToggleUnread(): void {
+  const thread = openThreadMenuThread.value
+  if (!thread) return
+  if (thread.unread) {
+    emit('mark-thread-read', thread.id)
+  } else {
+    emit('mark-thread-unread', thread.id)
+  }
+  closeThreadMenu()
+}
+
 function onSelect(threadId: string): void {
   emit('select', threadId)
 }
@@ -490,12 +684,14 @@ function toggleProjectMenu(projectName: string): void {
     return
   }
 
+  closeThreadMenu()
   openProjectMenuId.value = projectName
   projectMenuMode.value = 'actions'
   projectRenameDraft.value = getProjectDisplayName(projectName)
 }
 
 function openRenameProjectMenu(projectName: string): void {
+  closeThreadMenu()
   openProjectMenuId.value = projectName
   projectMenuMode.value = 'rename'
   projectRenameDraft.value = getProjectDisplayName(projectName)
@@ -577,6 +773,55 @@ function isEventInsideOpenProjectMenu(event: Event): boolean {
 
   const target = event.target
   return target instanceof Node ? openMenuWrapElement.contains(target) : false
+}
+
+function isEventInsideOpenThreadMenu(event: Event): boolean {
+  const openMenuElement = threadMenuPanelRef.value
+  if (!openMenuElement) return false
+
+  const eventPath = typeof event.composedPath === 'function' ? event.composedPath() : []
+  if (eventPath.includes(openMenuElement)) return true
+
+  const target = event.target
+  return target instanceof Node ? openMenuElement.contains(target) : false
+}
+
+function onThreadMenuPointerDown(event: PointerEvent): void {
+  if (!openThreadMenu.value) return
+  if (isEventInsideOpenThreadMenu(event)) return
+  closeThreadMenu()
+}
+
+function onThreadMenuFocusIn(event: FocusEvent): void {
+  if (!openThreadMenu.value) return
+  if (isEventInsideOpenThreadMenu(event)) return
+  closeThreadMenu()
+}
+
+function onThreadMenuKeyDown(event: KeyboardEvent): void {
+  if (!openThreadMenu.value) return
+  if (event.key !== 'Escape') return
+  event.preventDefault()
+  closeThreadMenu()
+}
+
+function onWindowBlurForThreadMenu(): void {
+  if (!openThreadMenu.value) return
+  closeThreadMenu()
+}
+
+function bindThreadMenuDismissListeners(): void {
+  window.addEventListener('pointerdown', onThreadMenuPointerDown, { capture: true })
+  window.addEventListener('focusin', onThreadMenuFocusIn, { capture: true })
+  window.addEventListener('keydown', onThreadMenuKeyDown)
+  window.addEventListener('blur', onWindowBlurForThreadMenu)
+}
+
+function unbindThreadMenuDismissListeners(): void {
+  window.removeEventListener('pointerdown', onThreadMenuPointerDown, { capture: true })
+  window.removeEventListener('focusin', onThreadMenuFocusIn, { capture: true })
+  window.removeEventListener('keydown', onThreadMenuKeyDown)
+  window.removeEventListener('blur', onWindowBlurForThreadMenu)
 }
 
 function onProjectMenuPointerDown(event: PointerEvent): void {
@@ -764,6 +1009,7 @@ function processProjectDragPointerSample(sample: DragPointerSample): void {
     }
 
     closeProjectMenu()
+    closeThreadMenu()
     suppressNextProjectToggleId.value = pending.projectName
     activeProjectDrag.value = {
       projectName: pending.projectName,
@@ -924,6 +1170,18 @@ watch(openProjectMenuId, (projectName) => {
   unbindProjectMenuDismissListeners()
 })
 
+watch(
+  () => openThreadMenu.value?.threadId ?? '',
+  (threadId) => {
+    if (threadId) {
+      bindThreadMenuDismissListeners()
+      return
+    }
+
+    unbindThreadMenuDismissListeners()
+  },
+)
+
 onBeforeUnmount(() => {
   for (const element of projectGroupElementByName.values()) {
     projectGroupResizeObserver?.unobserve(element)
@@ -931,6 +1189,7 @@ onBeforeUnmount(() => {
   projectGroupElementByName.clear()
   projectMenuWrapElementByName.clear()
   unbindProjectMenuDismissListeners()
+  unbindThreadMenuDismissListeners()
   resetProjectDragState()
 })
 </script>
@@ -1064,6 +1323,30 @@ onBeforeUnmount(() => {
 
 .thread-row {
   @apply hover:bg-zinc-200;
+}
+
+.thread-context-menu {
+  @apply fixed z-50 flex w-[13.75rem] flex-col gap-0.5 rounded-lg border border-zinc-200 bg-white p-1.5 shadow-xl;
+}
+
+.thread-context-menu-item {
+  @apply rounded-md px-3 py-1.5 text-left text-sm font-normal text-zinc-800 hover:bg-zinc-100;
+}
+
+.thread-context-rename-form {
+  @apply flex flex-col gap-1;
+}
+
+.thread-context-menu-label {
+  @apply px-2 pt-1 text-xs text-zinc-500;
+}
+
+.thread-context-menu-input {
+  @apply rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-900 outline-none focus:border-zinc-500;
+}
+
+.thread-context-menu-actions {
+  @apply mt-1 flex gap-1;
 }
 
 .thread-left-stack {

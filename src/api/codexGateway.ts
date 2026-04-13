@@ -9,6 +9,7 @@ import {
 } from './codexRpcClient'
 import type {
   ConfigReadResponse,
+  GetAccountRateLimitsResponse,
   ModelListResponse,
   ReasoningEffort,
   ThreadListResponse,
@@ -16,7 +17,7 @@ import type {
 } from './appServerDtos'
 import { normalizeCodexApiError } from './codexErrors'
 import { normalizeThreadGroupsV2, normalizeThreadMessagesV2 } from './normalizers/v2'
-import type { UiMessage, UiProjectGroup } from '../types/codex'
+import type { UiComposerDraft, UiMessage, UiProjectGroup, UiServerRequestId, UserInput } from '../types/codex'
 
 type CurrentModelConfig = {
   model: string
@@ -86,7 +87,7 @@ export function subscribeCodexNotifications(onNotification: (value: RpcNotificat
 export type { RpcNotification }
 
 export async function replyToServerRequest(
-  id: number,
+  id: UiServerRequestId,
   payload: { result?: unknown; error?: { code?: number; message: string } },
 ): Promise<void> {
   await respondServerRequest({
@@ -105,6 +106,17 @@ export async function resumeThread(threadId: string): Promise<void> {
 
 export async function archiveThread(threadId: string): Promise<void> {
   await callRpc('thread/archive', { threadId })
+}
+
+export async function setThreadName(threadId: string, name: string): Promise<void> {
+  const normalizedThreadId = threadId.trim()
+  const normalizedName = name.trim()
+  if (!normalizedThreadId || !normalizedName) return
+
+  await callRpc('thread/name/set', {
+    threadId: normalizedThreadId,
+    name: normalizedName,
+  })
 }
 
 function normalizeThreadIdFromPayload(payload: unknown): string {
@@ -143,14 +155,26 @@ export async function startThread(cwd?: string, model?: string): Promise<string>
 
 export async function startThreadTurn(
   threadId: string,
-  text: string,
+  draft: UiComposerDraft,
   model?: string,
   effort?: ReasoningEffort,
 ): Promise<void> {
   try {
+    const text = draft.text.trim()
+    const input: UserInput[] = []
+    if (text.length > 0) {
+      input.push({ type: 'text', text })
+    }
+    for (const image of draft.images) {
+      const url = image.url.trim()
+      if (url.length > 0) {
+        input.push({ type: 'image', url })
+      }
+    }
+
     const params: Record<string, unknown> = {
       threadId,
-      input: [{ type: 'text', text }],
+      input,
     }
     if (typeof model === 'string' && model.length > 0) {
       params.model = model
@@ -199,6 +223,10 @@ export async function getCurrentModelConfig(): Promise<CurrentModelConfig> {
   const model = payload.config.model ?? ''
   const reasoningEffort = normalizeReasoningEffort(payload.config.model_reasoning_effort)
   return { model, reasoningEffort }
+}
+
+export async function getAccountRateLimits(): Promise<GetAccountRateLimitsResponse> {
+  return callRpc<GetAccountRateLimitsResponse>('account/rateLimits/read')
 }
 
 // `thread/loaded/list` returns sessions loaded in memory, not currently running turns.

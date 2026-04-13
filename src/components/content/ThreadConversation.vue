@@ -9,7 +9,13 @@
       No messages in this thread yet.
     </p>
 
-    <ul v-else ref="conversationListRef" class="conversation-list" @scroll="onConversationScroll">
+    <ul
+      v-else
+      ref="conversationListRef"
+      class="conversation-list"
+      @scroll="onConversationScroll"
+      @wheel.passive="scheduleUserScrollStateSync"
+    >
       <li
         v-for="request in pendingRequests"
         :key="`server-request:${request.id}`"
@@ -117,6 +123,7 @@
                     <a v-else-if="segment.kind === 'file'" class="message-file-link" href="#" @click.prevent>
                       {{ segment.displayName }}
                     </a>
+                    <strong v-else-if="segment.kind === 'bold'" class="message-bold">{{ segment.value }}</strong>
                     <code v-else class="message-inline-code">{{ segment.value }}</code>
                   </template>
                 </p>
@@ -156,8 +163,15 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import type { ThreadScrollState, UiLiveOverlay, UiMessage, UiServerRequest } from '../../types/codex'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type {
+  ThreadScrollState,
+  UiLiveOverlay,
+  UiMessage,
+  UiServerRequest,
+  UiServerRequestId,
+  UiServerRequestReply,
+} from '../../types/codex'
 import IconTablerX from '../icons/IconTablerX.vue'
 
 const props = defineProps<{
@@ -167,11 +181,12 @@ const props = defineProps<{
   isLoading: boolean
   activeThreadId: string
   scrollState: ThreadScrollState | null
+  workingDirectory: string
 }>()
 
 const emit = defineEmits<{
   updateScrollState: [payload: { threadId: string; state: ThreadScrollState }]
-  respondServerRequest: [payload: { id: number; result?: unknown; error?: { code?: number; message: string } }]
+  respondServerRequest: [payload: UiServerRequestReply]
 }>()
 
 const conversationListRef = ref<HTMLElement | null>(null)
@@ -180,14 +195,19 @@ const modalImageUrl = ref('')
 const toolQuestionAnswers = ref<Record<string, string>>({})
 const toolQuestionOtherAnswers = ref<Record<string, string>>({})
 const BOTTOM_THRESHOLD_PX = 16
+const NEAR_BOTTOM_SCROLL_RATIO = 0.999
 type InlineSegment =
   | { kind: 'text'; value: string }
+  | { kind: 'bold'; value: string }
   | { kind: 'code'; value: string }
   | { kind: 'file'; value: string; displayName: string }
 
 let scrollRestoreFrame = 0
+let scrollRestoreGuardFrame = 0
+let userScrollStateFrame = 0
 let bottomLockFrame = 0
 let bottomLockFramesLeft = 0
+let isRestoringScrollState = false
 const trackedPendingImages = new WeakSet<HTMLImageElement>()
 
 type ParsedToolQuestion = {
@@ -216,10 +236,45 @@ function getBasename(pathValue: string): string {
   return name || pathValue
 }
 
+function normalizeDisplayPath(pathValue: string): string {
+  return pathValue.replace(/\\/gu, '/')
+}
+
+function stripTrailingSlash(pathValue: string): string {
+  return pathValue.replace(/\/+$/u, '')
+}
+
+function isPathWithDirectory(pathValue: string): boolean {
+  return pathValue.includes('/') || pathValue.includes('\\')
+}
+
+function formatFileDisplayPath(fileReference: { path: string; line: number | null }, label?: string): string {
+  const labelText = label?.trim() ?? ''
+  const normalizedPath = normalizeDisplayPath(fileReference.path)
+  const normalizedCwd = stripTrailingSlash(normalizeDisplayPath(props.workingDirectory.trim()))
+
+  let displayPath = normalizedPath
+  if (normalizedCwd && normalizedPath.startsWith(`${normalizedCwd}/`)) {
+    displayPath = normalizedPath.slice(normalizedCwd.length + 1)
+  } else if (normalizedPath.startsWith('./')) {
+    displayPath = normalizedPath.slice(2)
+  } else if (!isPathWithDirectory(normalizedPath) && labelText) {
+    displayPath = labelText
+  } else if (!isPathWithDirectory(normalizedPath) && !labelText) {
+    displayPath = getBasename(normalizedPath)
+  }
+
+  if (labelText && isPathWithDirectory(labelText) && !normalizedCwd) {
+    displayPath = normalizeDisplayPath(labelText)
+  }
+
+  return fileReference.line ? `${displayPath}:${String(fileReference.line)}` : displayPath
+}
+
 function parseFileReference(value: string): { path: string; line: number | null } | null {
   if (!value) return null
 
-  let pathValue = value
+  let pathValue = value.trim()
   let line: number | null = null
 
   const hashLineMatch = pathValue.match(/^(.*)#L(\d+)(?:C\d+)?$/u)
@@ -238,14 +293,82 @@ function parseFileReference(value: string): { path: string; line: number | null 
   return { path: pathValue, line }
 }
 
+function createFileSegment(value: string, label?: string): InlineSegment | null {
+  const fileReference = parseFileReference(value)
+  if (!fileReference) return null
+
+  const displayName = formatFileDisplayPath(fileReference, label)
+  return { kind: 'file', value, displayName }
+}
+
+function parseMarkdownFileLinkAt(text: string, start: number): { segment: InlineSegment; end: number } | null {
+  if (text[start] !== '[') return null
+
+  const labelEnd = text.indexOf(']', start + 1)
+  if (labelEnd < 0 || text[labelEnd + 1] !== '(') return null
+
+  const targetStart = labelEnd + 2
+  const targetEnd = text.indexOf(')', targetStart)
+  if (targetEnd < 0) return null
+
+  const label = text.slice(start + 1, labelEnd)
+  const target = text.slice(targetStart, targetEnd)
+  if (label.includes('\n') || target.includes('\n')) return null
+
+  const segment = createFileSegment(target, label)
+  if (!segment) return null
+  return { segment, end: targetEnd + 1 }
+}
+
+function parseBoldAt(text: string, start: number): { segment: InlineSegment; end: number } | null {
+  if (!text.startsWith('**', start)) return null
+  if (text[start + 2] === '*') return null
+
+  const valueStart = start + 2
+  const closingStart = text.indexOf('**', valueStart)
+  if (closingStart < 0) return null
+
+  const value = text.slice(valueStart, closingStart)
+  if (value.trim().length === 0 || value.includes('\n')) return null
+
+  return {
+    segment: { kind: 'bold', value },
+    end: closingStart + 2,
+  }
+}
+
 function parseInlineSegments(text: string): InlineSegment[] {
-  if (!text.includes('`')) return [{ kind: 'text', value: text }]
+  if (!text.includes('`') && !text.includes('](') && !text.includes('**')) {
+    return [{ kind: 'text', value: text }]
+  }
 
   const segments: InlineSegment[] = []
   let cursor = 0
   let textStart = 0
 
   while (cursor < text.length) {
+    const markdownFileLink = parseMarkdownFileLinkAt(text, cursor)
+    if (markdownFileLink) {
+      if (cursor > textStart) {
+        segments.push({ kind: 'text', value: text.slice(textStart, cursor) })
+      }
+      segments.push(markdownFileLink.segment)
+      cursor = markdownFileLink.end
+      textStart = cursor
+      continue
+    }
+
+    const boldSegment = parseBoldAt(text, cursor)
+    if (boldSegment) {
+      if (cursor > textStart) {
+        segments.push({ kind: 'text', value: text.slice(textStart, cursor) })
+      }
+      segments.push(boldSegment.segment)
+      cursor = boldSegment.end
+      textStart = cursor
+      continue
+    }
+
     if (text[cursor] !== '`') {
       cursor += 1
       continue
@@ -286,11 +409,9 @@ function parseInlineSegments(text: string): InlineSegment[] {
 
     const token = text.slice(cursor + openLength, closingStart)
     if (token.length > 0) {
-      const fileReference = parseFileReference(token)
-      if (fileReference) {
-        const basename = getBasename(fileReference.path)
-        const displayName = fileReference.line ? `${basename} (line ${String(fileReference.line)})` : basename
-        segments.push({ kind: 'file', value: token, displayName })
+      const fileSegment = createFileSegment(token)
+      if (fileSegment) {
+        segments.push(fileSegment)
       } else {
         segments.push({ kind: 'code', value: token })
       }
@@ -327,7 +448,7 @@ function readRequestReason(request: UiServerRequest): string {
   return typeof reason === 'string' ? reason.trim() : ''
 }
 
-function toolQuestionKey(requestId: number, questionId: string): string {
+function toolQuestionKey(requestId: UiServerRequestId, questionId: string): string {
   return `${String(requestId)}:${questionId}`
 }
 
@@ -361,19 +482,19 @@ function readToolQuestions(request: UiServerRequest): ParsedToolQuestion[] {
   return parsed
 }
 
-function readQuestionAnswer(requestId: number, questionId: string, fallback: string): string {
+function readQuestionAnswer(requestId: UiServerRequestId, questionId: string, fallback: string): string {
   const key = toolQuestionKey(requestId, questionId)
   const saved = toolQuestionAnswers.value[key]
   if (typeof saved === 'string' && saved.length > 0) return saved
   return fallback
 }
 
-function readQuestionOtherAnswer(requestId: number, questionId: string): string {
+function readQuestionOtherAnswer(requestId: UiServerRequestId, questionId: string): string {
   const key = toolQuestionKey(requestId, questionId)
   return toolQuestionOtherAnswers.value[key] ?? ''
 }
 
-function onQuestionAnswerChange(requestId: number, questionId: string, event: Event): void {
+function onQuestionAnswerChange(requestId: UiServerRequestId, questionId: string, event: Event): void {
   const target = event.target
   if (!(target instanceof HTMLSelectElement)) return
   const key = toolQuestionKey(requestId, questionId)
@@ -383,7 +504,7 @@ function onQuestionAnswerChange(requestId: number, questionId: string, event: Ev
   }
 }
 
-function onQuestionOtherAnswerInput(requestId: number, questionId: string, event: Event): void {
+function onQuestionOtherAnswerInput(requestId: UiServerRequestId, questionId: string, event: Event): void {
   const target = event.target
   if (!(target instanceof HTMLInputElement)) return
   const key = toolQuestionKey(requestId, questionId)
@@ -393,7 +514,7 @@ function onQuestionOtherAnswerInput(requestId: number, questionId: string, event
   }
 }
 
-function onRespondApproval(requestId: number, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel'): void {
+function onRespondApproval(requestId: UiServerRequestId, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel'): void {
   emit('respondServerRequest', {
     id: requestId,
     result: { decision },
@@ -417,7 +538,7 @@ function onRespondToolRequestUserInput(request: UiServerRequest): void {
   })
 }
 
-function onRespondToolCallFailure(requestId: number): void {
+function onRespondToolCallFailure(requestId: UiServerRequestId): void {
   emit('respondServerRequest', {
     id: requestId,
     result: {
@@ -432,7 +553,7 @@ function onRespondToolCallFailure(requestId: number): void {
   })
 }
 
-function onRespondToolCallSuccess(requestId: number): void {
+function onRespondToolCallSuccess(requestId: UiServerRequestId): void {
   emit('respondServerRequest', {
     id: requestId,
     result: {
@@ -442,14 +563,14 @@ function onRespondToolCallSuccess(requestId: number): void {
   })
 }
 
-function onRespondEmptyResult(requestId: number): void {
+function onRespondEmptyResult(requestId: UiServerRequestId): void {
   emit('respondServerRequest', {
     id: requestId,
     result: {},
   })
 }
 
-function onRejectUnknownRequest(requestId: number): void {
+function onRejectUnknownRequest(requestId: UiServerRequestId): void {
   emit('respondServerRequest', {
     id: requestId,
     error: {
@@ -472,7 +593,8 @@ function isAtBottom(container: HTMLElement): boolean {
   return distance <= BOTTOM_THRESHOLD_PX
 }
 
-function emitScrollState(container: HTMLElement): void {
+function emitScrollState(container: HTMLElement, options: { force?: boolean } = {}): void {
+  if (isRestoringScrollState && options.force !== true) return
   if (!props.activeThreadId) return
   const maxScrollTop = Math.max(container.scrollHeight - container.clientHeight, 0)
   const scrollRatio = maxScrollTop > 0 ? Math.min(Math.max(container.scrollTop / maxScrollTop, 0), 1) : 1
@@ -480,9 +602,46 @@ function emitScrollState(container: HTMLElement): void {
     threadId: props.activeThreadId,
     state: {
       scrollTop: container.scrollTop,
-      isAtBottom: isAtBottom(container),
+      isAtBottom: isAtBottom(container) || scrollRatio >= NEAR_BOTTOM_SCROLL_RATIO,
       scrollRatio,
     },
+  })
+}
+
+function shouldTreatSavedStateAsBottom(savedState: ThreadScrollState | null): boolean {
+  return !savedState ||
+    savedState.isAtBottom === true ||
+    (
+      typeof savedState.scrollRatio === 'number' &&
+      savedState.scrollRatio >= NEAR_BOTTOM_SCROLL_RATIO
+    )
+}
+
+function withScrollRestoreGuard(callback: () => void): void {
+  if (scrollRestoreGuardFrame) {
+    cancelAnimationFrame(scrollRestoreGuardFrame)
+    scrollRestoreGuardFrame = 0
+  }
+  isRestoringScrollState = true
+  try {
+    callback()
+  } finally {
+    scrollRestoreGuardFrame = requestAnimationFrame(() => {
+      scrollRestoreGuardFrame = 0
+      isRestoringScrollState = false
+    })
+  }
+}
+
+function scheduleUserScrollStateSync(): void {
+  if (userScrollStateFrame) {
+    cancelAnimationFrame(userScrollStateFrame)
+  }
+  userScrollStateFrame = requestAnimationFrame(() => {
+    userScrollStateFrame = 0
+    const container = conversationListRef.value
+    if (!container || props.isLoading) return
+    emitScrollState(container)
   })
 }
 
@@ -491,30 +650,33 @@ function applySavedScrollState(): void {
   if (!container) return
 
   const savedState = props.scrollState
-  if (!savedState || savedState.isAtBottom) {
-    enforceBottomState()
+  if (shouldTreatSavedStateAsBottom(savedState)) {
+    withScrollRestoreGuard(() => {
+      enforceBottomState({ forceEmit: true })
+    })
     return
   }
+  if (!savedState) return
 
-  const maxScrollTop = Math.max(container.scrollHeight - container.clientHeight, 0)
-  const targetScrollTop =
-    typeof savedState.scrollRatio === 'number'
-      ? savedState.scrollRatio * maxScrollTop
-      : savedState.scrollTop
-  container.scrollTop = Math.min(Math.max(targetScrollTop, 0), maxScrollTop)
-  emitScrollState(container)
+  withScrollRestoreGuard(() => {
+    const maxScrollTop = Math.max(container.scrollHeight - container.clientHeight, 0)
+    const targetScrollTop =
+      typeof savedState.scrollRatio === 'number'
+        ? savedState.scrollRatio * maxScrollTop
+        : savedState.scrollTop
+    container.scrollTop = Math.min(Math.max(targetScrollTop, 0), maxScrollTop)
+  })
 }
 
-function enforceBottomState(): void {
+function enforceBottomState(options: { forceEmit?: boolean } = {}): void {
   const container = conversationListRef.value
   if (!container) return
   scrollToBottom()
-  emitScrollState(container)
+  emitScrollState(container, { force: options.forceEmit })
 }
 
 function shouldLockToBottom(): boolean {
-  const savedState = props.scrollState
-  return !savedState || savedState.isAtBottom === true
+  return shouldTreatSavedStateAsBottom(props.scrollState)
 }
 
 function runBottomLockFrame(): void {
@@ -603,11 +765,19 @@ watch(
 
 watch(
   () => props.activeThreadId,
-  () => {
+  async () => {
     modalImageUrl.value = ''
+    if (props.isLoading) return
+    await scheduleScrollRestore()
   },
   { flush: 'post' },
 )
+
+onMounted(() => {
+  if (!props.isLoading) {
+    void scheduleScrollRestore()
+  }
+})
 
 function onConversationScroll(): void {
   const container = conversationListRef.value
@@ -626,6 +796,12 @@ function closeImageModal(): void {
 onBeforeUnmount(() => {
   if (scrollRestoreFrame) {
     cancelAnimationFrame(scrollRestoreFrame)
+  }
+  if (scrollRestoreGuardFrame) {
+    cancelAnimationFrame(scrollRestoreGuardFrame)
+  }
+  if (userScrollStateFrame) {
+    cancelAnimationFrame(userScrollStateFrame)
   }
   if (bottomLockFrame) {
     cancelAnimationFrame(bottomLockFrame)
@@ -793,6 +969,10 @@ onBeforeUnmount(() => {
 
 .message-inline-code {
   @apply rounded-md border border-slate-200 bg-slate-100/60 px-1.5 py-0.5 text-[0.875em] leading-[1.4] text-slate-900 font-mono;
+}
+
+.message-bold {
+  @apply font-semibold;
 }
 
 .message-file-link {

@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import {
   archiveThread,
+  getAccountRateLimits,
   getAvailableModelIds,
   getCurrentModelConfig,
   getPendingServerRequests,
@@ -9,18 +10,25 @@ import {
   getThreadGroups,
   getThreadMessages,
   resumeThread,
+  setThreadName as setThreadNameApi,
   startThread,
   subscribeCodexNotifications,
   startThreadTurn,
   type RpcNotification,
 } from '../api/codexGateway'
 import type {
+  GetAccountRateLimitsResponse,
+  RateLimitSnapshot,
+} from '../api/appServerDtos'
+import type {
   ReasoningEffort,
   ThreadScrollState,
+  UiComposerDraft,
   UiLiveOverlay,
   UiMessage,
   UiProjectGroup,
   UiServerRequest,
+  UiServerRequestId,
   UiServerRequestReply,
   UiThread,
 } from '../types/codex'
@@ -29,11 +37,35 @@ function flattenThreads(groups: UiProjectGroup[]): UiThread[] {
   return groups.flatMap((group) => group.threads)
 }
 
+const APPROVAL_REQUEST_METHODS = new Set([
+  'item/commandExecution/requestApproval',
+  'item/fileChange/requestApproval',
+  'execCommandApproval',
+  'applyPatchApproval',
+])
+
+function normalizeComposerDraft(draft: UiComposerDraft): UiComposerDraft {
+  return {
+    text: draft.text.trim(),
+    images: draft.images.filter((image) => image.url.trim().length > 0),
+  }
+}
+
+function isComposerDraftEmpty(draft: UiComposerDraft): boolean {
+  return draft.text.length === 0 && draft.images.length === 0
+}
+
+function isApprovalServerRequest(request: UiServerRequest): boolean {
+  return APPROVAL_REQUEST_METHODS.has(request.method)
+}
+
 const READ_STATE_STORAGE_KEY = 'codex-web-local.thread-read-state.v1'
 const SCROLL_STATE_STORAGE_KEY = 'codex-web-local.thread-scroll-state.v1'
 const SELECTED_THREAD_STORAGE_KEY = 'codex-web-local.selected-thread-id.v1'
 const PROJECT_ORDER_STORAGE_KEY = 'codex-web-local.project-order.v1'
 const PROJECT_DISPLAY_NAME_STORAGE_KEY = 'codex-web-local.project-display-name.v1'
+const THREAD_DISPLAY_NAME_STORAGE_KEY = 'codex-web-local.thread-display-name.v1'
+const MANUAL_UNREAD_STORAGE_KEY = 'codex-web-local.manual-unread.v1'
 const AUTO_REFRESH_ENABLED_STORAGE_KEY = 'codex-web-local.auto-refresh-enabled.v1'
 const EVENT_SYNC_DEBOUNCE_MS = 220
 const AUTO_REFRESH_INTERVAL_MS = 4000
@@ -188,6 +220,60 @@ function loadProjectDisplayNames(): Record<string, string> {
 function saveProjectDisplayNames(displayNames: Record<string, string>): void {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(PROJECT_DISPLAY_NAME_STORAGE_KEY, JSON.stringify(displayNames))
+}
+
+function loadStringRecord(storageKey: string): Record<string, string> {
+  if (typeof window === 'undefined') return {}
+
+  try {
+    const raw = window.localStorage.getItem(storageKey)
+    if (!raw) return {}
+
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+
+    const record: Record<string, string> = {}
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (key.length > 0 && typeof value === 'string' && value.length > 0) {
+        record[key] = value
+      }
+    }
+    return record
+  } catch {
+    return {}
+  }
+}
+
+function saveStringRecord(storageKey: string, record: Record<string, string>): void {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(storageKey, JSON.stringify(record))
+}
+
+function loadBooleanRecord(storageKey: string): Record<string, boolean> {
+  if (typeof window === 'undefined') return {}
+
+  try {
+    const raw = window.localStorage.getItem(storageKey)
+    if (!raw) return {}
+
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+
+    const record: Record<string, boolean> = {}
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (key.length > 0 && value === true) {
+        record[key] = true
+      }
+    }
+    return record
+  } catch {
+    return {}
+  }
+}
+
+function saveBooleanRecord(storageKey: string, record: Record<string, boolean>): void {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(storageKey, JSON.stringify(record))
 }
 
 function mergeProjectOrder(previousOrder: string[], incomingGroups: UiProjectGroup[]): string[] {
@@ -546,10 +632,15 @@ export function useDesktopState() {
   const availableModelIds = ref<string[]>([])
   const selectedModelId = ref('')
   const selectedReasoningEffort = ref<ReasoningEffort | ''>('medium')
+  const contextUsagePercentByThreadId = ref<Record<string, number>>({})
+  const accountRateLimits = ref<RateLimitSnapshot | null>(null)
+  const accountRateLimitsError = ref('')
   const readStateByThreadId = ref<Record<string, string>>(loadReadStateMap())
   const scrollStateByThreadId = ref<Record<string, ThreadScrollState>>(loadThreadScrollStateMap())
   const projectOrder = ref<string[]>(loadProjectOrder())
   const projectDisplayNameById = ref<Record<string, string>>(loadProjectDisplayNames())
+  const threadDisplayNameById = ref<Record<string, string>>(loadStringRecord(THREAD_DISPLAY_NAME_STORAGE_KEY))
+  const manualUnreadByThreadId = ref<Record<string, boolean>>(loadBooleanRecord(MANUAL_UNREAD_STORAGE_KEY))
   const loadedVersionByThreadId = ref<Record<string, string>>({})
   const loadedMessagesByThreadId = ref<Record<string, boolean>>({})
   const resumedThreadById = ref<Record<string, boolean>>({})
@@ -563,6 +654,7 @@ export function useDesktopState() {
   const isLoadingMessages = ref(false)
   const isSendingMessage = ref(false)
   const isInterruptingTurn = ref(false)
+  const isLoadingRateLimits = ref(false)
   const error = ref('')
   const isPolling = ref(false)
   const hasLoadedThreads = ref(false)
@@ -585,6 +677,9 @@ export function useDesktopState() {
   const selectedThreadScrollState = computed<ThreadScrollState | null>(
     () => scrollStateByThreadId.value[selectedThreadId.value] ?? null,
   )
+  const selectedContextUsagePercent = computed<number | null>(
+    () => contextUsagePercentByThreadId.value[selectedThreadId.value] ?? null,
+  )
   const selectedThreadServerRequests = computed<UiServerRequest[]>(() => {
     const rows: UiServerRequest[] = []
     const selected = selectedThreadId.value
@@ -596,6 +691,12 @@ export function useDesktopState() {
     }
     return rows.sort((first, second) => first.receivedAtIso.localeCompare(second.receivedAtIso))
   })
+  const pendingApprovalRequests = computed<UiServerRequest[]>(() =>
+    Object.values(pendingServerRequestsByThreadId.value)
+      .flat()
+      .filter(isApprovalServerRequest)
+      .sort((first, second) => first.receivedAtIso.localeCompare(second.receivedAtIso)),
+  )
   const selectedLiveOverlay = computed<UiLiveOverlay | null>(() => {
     const threadId = selectedThreadId.value
     if (!threadId) return null
@@ -686,13 +787,16 @@ export function useDesktopState() {
       projectName: group.projectName,
       threads: group.threads.map((thread) => {
         const inProgress = inProgressById.value[thread.id] === true
+        const manualUnread = manualUnreadByThreadId.value[thread.id] === true
         const isSelected = selectedThreadId.value === thread.id
         const lastReadIso = readStateByThreadId.value[thread.id]
         const unreadByEvent = eventUnreadByThreadId.value[thread.id] === true
-        const unread = !isSelected && !inProgress && (unreadByEvent || lastReadIso !== thread.updatedAtIso)
+        const unread = !inProgress && (manualUnread || (!isSelected && (unreadByEvent || lastReadIso !== thread.updatedAtIso)))
+        const displayName = threadDisplayNameById.value[thread.id]?.trim()
 
         return {
           ...thread,
+          title: displayName || thread.title,
           inProgress,
           unread,
         }
@@ -722,8 +826,19 @@ export function useDesktopState() {
     turnSummaryByThreadId.value = pruneThreadStateMap(turnSummaryByThreadId.value, activeThreadIds)
     turnActivityByThreadId.value = pruneThreadStateMap(turnActivityByThreadId.value, activeThreadIds)
     turnErrorByThreadId.value = pruneThreadStateMap(turnErrorByThreadId.value, activeThreadIds)
+    contextUsagePercentByThreadId.value = pruneThreadStateMap(contextUsagePercentByThreadId.value, activeThreadIds)
     activeTurnIdByThreadId.value = pruneThreadStateMap(activeTurnIdByThreadId.value, activeThreadIds)
     eventUnreadByThreadId.value = pruneThreadStateMap(eventUnreadByThreadId.value, activeThreadIds)
+    const nextManualUnread = pruneThreadStateMap(manualUnreadByThreadId.value, activeThreadIds)
+    if (nextManualUnread !== manualUnreadByThreadId.value) {
+      manualUnreadByThreadId.value = nextManualUnread
+      saveBooleanRecord(MANUAL_UNREAD_STORAGE_KEY, nextManualUnread)
+    }
+    const nextThreadNames = pruneThreadStateMap(threadDisplayNameById.value, activeThreadIds)
+    if (nextThreadNames !== threadDisplayNameById.value) {
+      threadDisplayNameById.value = nextThreadNames
+      saveStringRecord(THREAD_DISPLAY_NAME_STORAGE_KEY, nextThreadNames)
+    }
     inProgressById.value = pruneThreadStateMap(inProgressById.value, activeThreadIds)
     const nextPending: Record<string, UiServerRequest[]> = {}
     for (const [threadId, requests] of Object.entries(pendingServerRequestsByThreadId.value)) {
@@ -745,6 +860,10 @@ export function useDesktopState() {
     saveReadStateMap(readStateByThreadId.value)
     if (eventUnreadByThreadId.value[threadId]) {
       eventUnreadByThreadId.value = omitKey(eventUnreadByThreadId.value, threadId)
+    }
+    if (manualUnreadByThreadId.value[threadId]) {
+      manualUnreadByThreadId.value = omitKey(manualUnreadByThreadId.value, threadId)
+      saveBooleanRecord(MANUAL_UNREAD_STORAGE_KEY, manualUnreadByThreadId.value)
     }
     applyThreadFlags()
   }
@@ -939,6 +1058,56 @@ export function useDesktopState() {
     return typeof value === 'number' && Number.isFinite(value) ? value : null
   }
 
+  function isRateLimitSnapshot(value: unknown): value is RateLimitSnapshot {
+    const record = asRecord(value)
+    if (!record) return false
+    return 'primary' in record || 'secondary' in record || 'credits' in record
+  }
+
+  function selectAccountRateLimitSnapshot(payload: GetAccountRateLimitsResponse): RateLimitSnapshot | null {
+    const byLimitId = payload.rateLimitsByLimitId
+    const codexSnapshot = byLimitId?.codex
+    if (isRateLimitSnapshot(codexSnapshot)) return codexSnapshot
+
+    if (isRateLimitSnapshot(payload.rateLimits)) return payload.rateLimits
+
+    if (byLimitId) {
+      for (const snapshot of Object.values(byLimitId)) {
+        if (isRateLimitSnapshot(snapshot)) return snapshot
+      }
+    }
+
+    return null
+  }
+
+  function readRateLimitSnapshotFromNotification(notification: RpcNotification): RateLimitSnapshot | null {
+    if (notification.method !== 'account/rateLimits/updated') return null
+    const params = asRecord(notification.params)
+    const snapshot = params?.rateLimits
+    return isRateLimitSnapshot(snapshot) ? snapshot : null
+  }
+
+  function readContextUsageUpdate(notification: RpcNotification): { threadId: string; percent: number | null } | null {
+    if (notification.method !== 'thread/tokenUsage/updated') return null
+
+    const params = asRecord(notification.params)
+    const threadId = readString(params?.threadId)
+    if (!threadId) return null
+
+    const tokenUsage = asRecord(params?.tokenUsage)
+    const lastUsage = asRecord(tokenUsage?.last)
+    const modelContextWindow = readNumber(tokenUsage?.modelContextWindow)
+    const inputTokens = readNumber(lastUsage?.inputTokens)
+    if (!modelContextWindow || modelContextWindow <= 0 || inputTokens === null) {
+      return { threadId, percent: null }
+    }
+
+    return {
+      threadId,
+      percent: clamp((inputTokens / modelContextWindow) * 100, 0, 100),
+    }
+  }
+
   function extractThreadIdFromNotification(notification: RpcNotification): string {
     const params = asRecord(notification.params)
     if (!params) return ''
@@ -982,12 +1151,15 @@ export function useDesktopState() {
     const id = row.id
     const method = readString(row.method)
     const requestParams = row.params
-    if (typeof id !== 'number' || !Number.isInteger(id) || !method) {
+    if ((typeof id !== 'number' && typeof id !== 'string') || !method) {
       return null
     }
 
     const requestParamRecord = asRecord(requestParams)
-    const threadId = readString(requestParamRecord?.threadId) || GLOBAL_SERVER_REQUEST_SCOPE
+    const threadId =
+      readString(requestParamRecord?.threadId) ||
+      readString(requestParamRecord?.conversationId) ||
+      GLOBAL_SERVER_REQUEST_SCOPE
     const turnId = readString(requestParamRecord?.turnId)
     const itemId = readString(requestParamRecord?.itemId)
     const receivedAtIso = readString(row.receivedAtIso) || new Date().toISOString()
@@ -1020,7 +1192,7 @@ export function useDesktopState() {
     }
   }
 
-  function removePendingServerRequestById(requestId: number): void {
+  function removePendingServerRequestById(requestId: UiServerRequestId): void {
     const next: Record<string, UiServerRequest[]> = {}
     for (const [threadId, requests] of Object.entries(pendingServerRequestsByThreadId.value)) {
       const filtered = requests.filter((request) => request.id !== requestId)
@@ -1042,7 +1214,7 @@ export function useDesktopState() {
     if (notification.method === 'server/request/resolved') {
       const row = asRecord(notification.params)
       const id = row?.id
-      if (typeof id === 'number' && Number.isInteger(id)) {
+      if (typeof id === 'number' || typeof id === 'string') {
         removePendingServerRequestById(id)
       }
       return true
@@ -1310,6 +1482,26 @@ export function useDesktopState() {
   }
 
   function applyRealtimeUpdates(notification: RpcNotification): void {
+    const contextUsageUpdate = readContextUsageUpdate(notification)
+    if (contextUsageUpdate) {
+      if (contextUsageUpdate.percent === null) {
+        contextUsagePercentByThreadId.value = omitKey(contextUsagePercentByThreadId.value, contextUsageUpdate.threadId)
+      } else {
+        contextUsagePercentByThreadId.value = {
+          ...contextUsagePercentByThreadId.value,
+          [contextUsageUpdate.threadId]: contextUsageUpdate.percent,
+        }
+      }
+      return
+    }
+
+    const nextRateLimits = readRateLimitSnapshotFromNotification(notification)
+    if (nextRateLimits) {
+      accountRateLimits.value = nextRateLimits
+      accountRateLimitsError.value = ''
+      return
+    }
+
     if (handleServerRequestNotification(notification)) {
       return
     }
@@ -1508,6 +1700,20 @@ export function useDesktopState() {
     }
   }
 
+  async function refreshAccountRateLimits(): Promise<void> {
+    isLoadingRateLimits.value = true
+    accountRateLimitsError.value = ''
+
+    try {
+      const payload = await getAccountRateLimits()
+      accountRateLimits.value = selectAccountRateLimitSnapshot(payload)
+    } catch (unknownError) {
+      accountRateLimitsError.value = unknownError instanceof Error ? unknownError.message : 'Failed to load quota'
+    } finally {
+      isLoadingRateLimits.value = false
+    }
+  }
+
   async function loadMessages(threadId: string, options: { silent?: boolean } = {}) {
     if (!threadId) {
       return
@@ -1566,6 +1772,7 @@ export function useDesktopState() {
       await Promise.all([
         loadThreads(),
         refreshModelPreferences(),
+        refreshAccountRateLimits(),
       ])
       await loadMessages(selectedThreadId.value)
     } catch (unknownError) {
@@ -1596,10 +1803,10 @@ export function useDesktopState() {
     }
   }
 
-  async function sendMessageToSelectedThread(text: string): Promise<void> {
+  async function sendMessageToSelectedThread(draft: UiComposerDraft): Promise<void> {
     const threadId = selectedThreadId.value
-    const nextText = text.trim()
-    if (!threadId || !nextText) return
+    const nextDraft = normalizeComposerDraft(draft)
+    if (!threadId || isComposerDraftEmpty(nextDraft)) return
 
     isSendingMessage.value = true
     error.value = ''
@@ -1613,7 +1820,7 @@ export function useDesktopState() {
     setThreadInProgress(threadId, true)
 
     try {
-      await startTurnForThread(threadId, nextText)
+      await startTurnForThread(threadId, nextDraft)
     } catch (unknownError) {
       shouldAutoScrollOnNextAgentEvent = false
       setThreadInProgress(threadId, false)
@@ -1627,11 +1834,11 @@ export function useDesktopState() {
     }
   }
 
-  async function sendMessageToNewThread(text: string, cwd: string): Promise<string> {
-    const nextText = text.trim()
+  async function sendMessageToNewThread(draft: UiComposerDraft, cwd: string): Promise<string> {
+    const nextDraft = normalizeComposerDraft(draft)
     const targetCwd = cwd.trim()
     const selectedModel = selectedModelId.value.trim()
-    if (!nextText) return ''
+    if (isComposerDraftEmpty(nextDraft)) return ''
 
     isSendingMessage.value = true
     error.value = ''
@@ -1655,7 +1862,7 @@ export function useDesktopState() {
       setTurnErrorForThread(threadId, null)
       setThreadInProgress(threadId, true)
 
-      await startTurnForThread(threadId, nextText)
+      await startTurnForThread(threadId, nextDraft)
       return threadId
     } catch (unknownError) {
       shouldAutoScrollOnNextAgentEvent = false
@@ -1674,7 +1881,7 @@ export function useDesktopState() {
     }
   }
 
-  async function startTurnForThread(threadId: string, nextText: string): Promise<void> {
+  async function startTurnForThread(threadId: string, draft: UiComposerDraft): Promise<void> {
     const modelId = selectedModelId.value.trim()
     const reasoningEffort = selectedReasoningEffort.value
 
@@ -1685,7 +1892,7 @@ export function useDesktopState() {
 
       await startThreadTurn(
         threadId,
-        nextText,
+        draft,
         modelId || undefined,
         reasoningEffort || undefined,
       )
@@ -1742,6 +1949,46 @@ export function useDesktopState() {
       [projectName]: displayName,
     }
     saveProjectDisplayNames(projectDisplayNameById.value)
+  }
+
+  async function renameThreadById(threadId: string, title: string): Promise<void> {
+    const normalizedThreadId = threadId.trim()
+    const normalizedTitle = title.trim()
+    if (!normalizedThreadId || !normalizedTitle) return
+
+    error.value = ''
+    try {
+      await setThreadNameApi(normalizedThreadId, normalizedTitle)
+      threadDisplayNameById.value = {
+        ...threadDisplayNameById.value,
+        [normalizedThreadId]: normalizedTitle,
+      }
+      saveStringRecord(THREAD_DISPLAY_NAME_STORAGE_KEY, threadDisplayNameById.value)
+      applyThreadFlags()
+      pendingThreadsRefresh = true
+      await syncFromNotifications()
+    } catch (unknownError) {
+      const errorMessage = unknownError instanceof Error ? unknownError.message : 'Failed to rename thread'
+      error.value = errorMessage
+      throw unknownError
+    }
+  }
+
+  function markThreadUnreadById(threadId: string): void {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return
+    manualUnreadByThreadId.value = {
+      ...manualUnreadByThreadId.value,
+      [normalizedThreadId]: true,
+    }
+    saveBooleanRecord(MANUAL_UNREAD_STORAGE_KEY, manualUnreadByThreadId.value)
+    applyThreadFlags()
+  }
+
+  function markThreadReadById(threadId: string): void {
+    const normalizedThreadId = threadId.trim()
+    if (!normalizedThreadId) return
+    markThreadAsRead(normalizedThreadId)
   }
 
   function removeProject(projectName: string): void {
@@ -1974,6 +2221,7 @@ export function useDesktopState() {
     persistedMessagesByThreadId.value = {}
     liveAgentMessagesByThreadId.value = {}
     liveReasoningTextByThreadId.value = {}
+    contextUsagePercentByThreadId.value = {}
     turnActivityByThreadId.value = {}
     turnSummaryByThreadId.value = {}
     turnErrorByThreadId.value = {}
@@ -1986,16 +2234,21 @@ export function useDesktopState() {
     selectedThread,
     selectedThreadScrollState,
     selectedThreadServerRequests,
+    pendingApprovalRequests,
     selectedLiveOverlay,
     selectedThreadId,
     availableModelIds,
     selectedModelId,
     selectedReasoningEffort,
+    selectedContextUsagePercent,
+    accountRateLimits,
+    accountRateLimitsError,
     messages,
     isLoadingThreads,
     isLoadingMessages,
     isSendingMessage,
     isInterruptingTurn,
+    isLoadingRateLimits,
     isAutoRefreshEnabled,
     autoRefreshSecondsLeft,
     error,
@@ -2010,6 +2263,9 @@ export function useDesktopState() {
     setSelectedReasoningEffort,
     respondToPendingServerRequest,
     renameProject,
+    renameThreadById,
+    markThreadUnreadById,
+    markThreadReadById,
     removeProject,
     reorderProject,
     toggleAutoRefreshTimer,

@@ -1,5 +1,5 @@
 <template>
-  <DesktopLayout :is-sidebar-collapsed="isSidebarCollapsed">
+  <DesktopLayout :is-sidebar-collapsed="isSidebarCollapsed" :data-theme="themeName">
     <template #sidebar>
       <section class="sidebar-root">
         <SidebarThreadControls
@@ -13,6 +13,17 @@
           @toggle-auto-refresh="onToggleAutoRefreshTimer"
           @start-new-thread="onStartNewThreadFromToolbar"
         >
+          <button
+            class="theme-toggle-button"
+            type="button"
+            :aria-pressed="isDarkMode"
+            :aria-label="themeToggleLabel"
+            :title="themeToggleLabel"
+            @click="toggleDarkMode"
+          >
+            <IconTablerSun v-if="isDarkMode" class="theme-toggle-icon" />
+            <IconTablerMoon v-else class="theme-toggle-icon" />
+          </button>
           <button
             class="sidebar-search-toggle"
             type="button"
@@ -46,13 +57,25 @@
           </button>
         </div>
 
-        <SidebarThreadTree :groups="projectGroups" :project-display-name-by-id="projectDisplayNameById"
+        <SidebarThreadTree
           v-if="!isSidebarCollapsed"
+          class="sidebar-thread-tree-host"
+          :groups="projectGroups"
+          :project-display-name-by-id="projectDisplayNameById"
           :selected-thread-id="selectedThreadId" :is-loading="isLoadingThreads"
           :search-query="sidebarSearchQuery"
           @select="onSelectThread"
-          @archive="onArchiveThread" @start-new-thread="onStartNewThread" @rename-project="onRenameProject"
+          @archive="onArchiveThread" @rename-thread="onRenameThread"
+          @mark-thread-unread="onMarkThreadUnread" @mark-thread-read="onMarkThreadRead"
+          @start-new-thread="onStartNewThread" @rename-project="onRenameProject"
           @remove-project="onRemoveProject" @reorder-project="onReorderProject" />
+
+        <SidebarRateLimitMeters
+          v-if="!isSidebarCollapsed"
+          :rate-limits="accountRateLimits"
+          :is-loading="isLoadingRateLimits"
+          :error="accountRateLimitsError"
+        />
       </section>
     </template>
 
@@ -70,7 +93,19 @@
               @toggle-sidebar="setSidebarCollapsed(!isSidebarCollapsed)"
               @toggle-auto-refresh="onToggleAutoRefreshTimer"
               @start-new-thread="onStartNewThreadFromToolbar"
-            />
+            >
+              <button
+                class="theme-toggle-button"
+                type="button"
+                :aria-pressed="isDarkMode"
+                :aria-label="themeToggleLabel"
+                :title="themeToggleLabel"
+                @click="toggleDarkMode"
+              >
+                <IconTablerSun v-if="isDarkMode" class="theme-toggle-icon" />
+                <IconTablerMoon v-else class="theme-toggle-icon" />
+              </button>
+            </SidebarThreadControls>
           </template>
         </ContentHeader>
 
@@ -81,12 +116,15 @@
                 <p class="new-thread-hero">Let's build</p>
                 <ComposerDropdown class="new-thread-folder-dropdown" :model-value="newThreadCwd"
                   :options="newThreadFolderOptions" placeholder="Choose folder"
-                  :disabled="newThreadFolderOptions.length === 0" @update:model-value="onSelectNewThreadFolder" />
+                  searchable search-placeholder="Search projects"
+                  add-option-label="Add new project" add-option-placeholder="Project path"
+                  @update:model-value="onSelectNewThreadFolder" @add-option="onAddNewThreadProject" />
               </div>
 
               <ThreadComposer :active-thread-id="composerThreadContextId" :disabled="isSendingMessage"
                 :models="availableModelIds" :selected-model="selectedModelId"
                 :selected-reasoning-effort="selectedReasoningEffort" :is-turn-in-progress="false"
+                :context-usage-percent="null"
                 :is-interrupting-turn="false" @submit="onSubmitThreadMessage"
                 @update:selected-model="onSelectModel" @update:selected-reasoning-effort="onSelectReasoningEffort" />
             </div>
@@ -94,10 +132,11 @@
           <template v-else>
             <div class="content-grid">
               <div class="content-thread">
-                <ThreadConversation :messages="filteredMessages" :is-loading="isLoadingMessages"
+                <ThreadConversation :key="composerThreadContextId" :messages="filteredMessages" :is-loading="isLoadingMessages"
                   :active-thread-id="composerThreadContextId" :scroll-state="selectedThreadScrollState"
+                  :working-directory="selectedThread?.cwd ?? ''"
                   :live-overlay="liveOverlay"
-                  :pending-requests="selectedThreadServerRequests"
+                  :pending-requests="selectedNonApprovalServerRequests"
                   @update-scroll-state="onUpdateThreadScrollState"
                   @respond-server-request="onRespondServerRequest" />
               </div>
@@ -105,12 +144,18 @@
               <ThreadComposer :active-thread-id="composerThreadContextId"
                 :disabled="isSendingMessage || isLoadingMessages" :models="availableModelIds"
                 :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
+                :context-usage-percent="selectedContextUsagePercent"
                 :is-turn-in-progress="isSelectedThreadInProgress" :is-interrupting-turn="isInterruptingTurn"
                 @submit="onSubmitThreadMessage" @update:selected-model="onSelectModel"
                 @update:selected-reasoning-effort="onSelectReasoningEffort" @interrupt="onInterruptTurn" />
             </div>
           </template>
         </section>
+
+        <ApprovalRequestsPanel
+          :requests="pendingApprovalRequests"
+          @respond-server-request="onRespondServerRequest"
+        />
       </section>
     </template>
   </DesktopLayout>
@@ -124,14 +169,34 @@ import SidebarThreadTree from './components/sidebar/SidebarThreadTree.vue'
 import ContentHeader from './components/content/ContentHeader.vue'
 import ThreadConversation from './components/content/ThreadConversation.vue'
 import ThreadComposer from './components/content/ThreadComposer.vue'
+import ApprovalRequestsPanel from './components/content/ApprovalRequestsPanel.vue'
 import ComposerDropdown from './components/content/ComposerDropdown.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
+import SidebarRateLimitMeters from './components/sidebar/SidebarRateLimitMeters.vue'
 import IconTablerSearch from './components/icons/IconTablerSearch.vue'
+import IconTablerMoon from './components/icons/IconTablerMoon.vue'
+import IconTablerSun from './components/icons/IconTablerSun.vue'
 import IconTablerX from './components/icons/IconTablerX.vue'
 import { useDesktopState } from './composables/useDesktopState'
-import type { ReasoningEffort, ThreadScrollState } from './types/codex'
+import type {
+  ReasoningEffort,
+  ThreadScrollState,
+  UiComposerDraft,
+  UiServerRequest,
+  UiServerRequestReply,
+} from './types/codex'
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
+const DARK_MODE_STORAGE_KEY = 'codex-web-local.dark-mode.v1'
+
+function loadDarkMode(): boolean {
+  if (typeof window === 'undefined') return false
+
+  const saved = window.localStorage.getItem(DARK_MODE_STORAGE_KEY)
+  if (saved === '1') return true
+  if (saved === '0') return false
+  return window.matchMedia('(prefers-color-scheme: dark)').matches
+}
 
 const {
   projectGroups,
@@ -139,16 +204,21 @@ const {
   selectedThread,
   selectedThreadScrollState,
   selectedThreadServerRequests,
+  pendingApprovalRequests,
   selectedLiveOverlay,
   selectedThreadId,
   availableModelIds,
   selectedModelId,
   selectedReasoningEffort,
+  selectedContextUsagePercent,
+  accountRateLimits,
+  accountRateLimitsError,
   messages,
   isLoadingThreads,
   isLoadingMessages,
   isSendingMessage,
   isInterruptingTurn,
+  isLoadingRateLimits,
   isAutoRefreshEnabled,
   autoRefreshSecondsLeft,
   refreshAll,
@@ -162,6 +232,9 @@ const {
   setSelectedReasoningEffort,
   respondToPendingServerRequest,
   renameProject,
+  renameThreadById,
+  markThreadUnreadById,
+  markThreadReadById,
   removeProject,
   reorderProject,
   toggleAutoRefreshTimer,
@@ -174,7 +247,9 @@ const router = useRouter()
 const isRouteSyncInProgress = ref(false)
 const hasInitialized = ref(false)
 const newThreadCwd = ref('')
+const newThreadCustomProjectOptions = ref<Array<{ value: string; label: string }>>([])
 const isSidebarCollapsed = ref(loadSidebarCollapsed())
+const isDarkMode = ref(loadDarkMode())
 const sidebarSearchQuery = ref('')
 const isSidebarSearchVisible = ref(false)
 const sidebarSearchInputRef = ref<HTMLInputElement | null>(null)
@@ -195,6 +270,8 @@ const knownThreadIdSet = computed(() => {
 })
 
 const isHomeRoute = computed(() => route.name === 'home')
+const themeName = computed(() => (isDarkMode.value ? 'dark' : 'light'))
+const themeToggleLabel = computed(() => (isDarkMode.value ? 'Switch to light mode' : 'Switch to dark mode'))
 const contentTitle = computed(() => {
   if (isHomeRoute.value) return 'New thread'
   return selectedThread.value?.title ?? 'Choose a thread'
@@ -213,6 +290,9 @@ const filteredMessages = computed(() =>
   }),
 )
 const liveOverlay = computed(() => selectedLiveOverlay.value)
+const selectedNonApprovalServerRequests = computed(() =>
+  selectedThreadServerRequests.value.filter((request) => !isApprovalRequest(request)),
+)
 const composerThreadContextId = computed(() => (isHomeRoute.value ? '__new-thread__' : selectedThreadId.value))
 const isSelectedThreadInProgress = computed(() => !isHomeRoute.value && selectedThread.value?.inProgress === true)
 const newThreadFolderOptions = computed(() => {
@@ -227,6 +307,12 @@ const newThreadFolderOptions = computed(() => {
       value: cwd,
       label: projectDisplayNameById.value[group.projectName] ?? group.projectName,
     })
+  }
+
+  for (const option of newThreadCustomProjectOptions.value) {
+    if (seenCwds.has(option.value)) continue
+    seenCwds.add(option.value)
+    options.push(option)
   }
 
   return options
@@ -273,6 +359,18 @@ function onArchiveThread(threadId: string): void {
   void archiveThreadById(threadId)
 }
 
+function onRenameThread(payload: { threadId: string; title: string }): void {
+  void renameThreadById(payload.threadId, payload.title)
+}
+
+function onMarkThreadUnread(threadId: string): void {
+  markThreadUnreadById(threadId)
+}
+
+function onMarkThreadRead(threadId: string): void {
+  markThreadReadById(threadId)
+}
+
 function onStartNewThread(projectName: string): void {
   const projectGroup = projectGroups.value.find((group) => group.projectName === projectName)
   const projectCwd = projectGroup?.threads[0]?.cwd?.trim() ?? ''
@@ -308,7 +406,14 @@ function onUpdateThreadScrollState(payload: { threadId: string; state: ThreadScr
   setThreadScrollState(payload.threadId, payload.state)
 }
 
-function onRespondServerRequest(payload: { id: number; result?: unknown; error?: { code?: number; message: string } }): void {
+function isApprovalRequest(request: UiServerRequest): boolean {
+  return request.method === 'item/commandExecution/requestApproval' ||
+    request.method === 'item/fileChange/requestApproval' ||
+    request.method === 'execCommandApproval' ||
+    request.method === 'applyPatchApproval'
+}
+
+function onRespondServerRequest(payload: UiServerRequestReply): void {
   void respondToPendingServerRequest(payload)
 }
 
@@ -322,6 +427,11 @@ function setSidebarCollapsed(nextValue: boolean): void {
   saveSidebarCollapsed(nextValue)
 }
 
+function toggleDarkMode(): void {
+  isDarkMode.value = !isDarkMode.value
+  window.localStorage.setItem(DARK_MODE_STORAGE_KEY, isDarkMode.value ? '1' : '0')
+}
+
 function onWindowKeyDown(event: KeyboardEvent): void {
   if (event.defaultPrevented) return
   if (!event.ctrlKey && !event.metaKey) return
@@ -331,16 +441,39 @@ function onWindowKeyDown(event: KeyboardEvent): void {
   setSidebarCollapsed(!isSidebarCollapsed.value)
 }
 
-function onSubmitThreadMessage(text: string): void {
+function onSubmitThreadMessage(draft: UiComposerDraft): void {
   if (isHomeRoute.value) {
-    void submitFirstMessageForNewThread(text)
+    void submitFirstMessageForNewThread(draft)
     return
   }
-  void sendMessageToSelectedThread(text)
+  void sendMessageToSelectedThread(draft)
 }
 
 function onSelectNewThreadFolder(cwd: string): void {
   newThreadCwd.value = cwd.trim()
+}
+
+function getProjectLabelFromCwd(cwd: string): string {
+  const normalized = cwd.replace(/\\/gu, '/').replace(/\/+$/u, '')
+  const name = normalized.split('/').filter(Boolean).pop()
+  return name || cwd
+}
+
+function onAddNewThreadProject(cwd: string): void {
+  const normalizedCwd = cwd.trim()
+  if (!normalizedCwd) return
+
+  const exists = newThreadFolderOptions.value.some((option) => option.value === normalizedCwd)
+  if (!exists) {
+    newThreadCustomProjectOptions.value = [
+      ...newThreadCustomProjectOptions.value,
+      {
+        value: normalizedCwd,
+        label: getProjectLabelFromCwd(normalizedCwd),
+      },
+    ]
+  }
+  newThreadCwd.value = normalizedCwd
 }
 
 function onSelectModel(modelId: string): void {
@@ -461,9 +594,9 @@ watch(
   { immediate: true },
 )
 
-async function submitFirstMessageForNewThread(text: string): Promise<void> {
+async function submitFirstMessageForNewThread(draft: UiComposerDraft): Promise<void> {
   try {
-    const threadId = await sendMessageToNewThread(text, newThreadCwd.value)
+    const threadId = await sendMessageToNewThread(draft, newThreadCwd.value)
     if (!threadId) return
     await router.replace({ name: 'thread', params: { threadId } })
   } catch {
@@ -476,7 +609,7 @@ async function submitFirstMessageForNewThread(text: string): Promise<void> {
 @reference "tailwindcss";
 
 .sidebar-root {
-  @apply min-h-full py-4 px-2 flex flex-col gap-2 select-none;
+  @apply h-full min-h-full py-4 px-2 flex flex-col gap-2 overflow-hidden select-none;
 }
 
 .sidebar-root input,
@@ -494,6 +627,18 @@ async function submitFirstMessageForNewThread(text: string): Promise<void> {
 
 .sidebar-search-toggle {
   @apply h-6.75 w-6.75 rounded-md border border-transparent bg-transparent text-zinc-600 flex items-center justify-center transition hover:border-zinc-200 hover:bg-zinc-50;
+}
+
+.theme-toggle-button {
+  @apply h-6.75 w-6.75 rounded-md border border-transparent bg-transparent text-zinc-600 flex items-center justify-center transition hover:border-zinc-200 hover:bg-zinc-50;
+}
+
+.theme-toggle-button[aria-pressed='true'] {
+  @apply border-zinc-300 bg-zinc-100 text-zinc-700;
+}
+
+.theme-toggle-icon {
+  @apply w-4 h-4;
 }
 
 .sidebar-search-toggle[aria-pressed='true'] {
@@ -522,6 +667,17 @@ async function submitFirstMessageForNewThread(text: string): Promise<void> {
 
 .sidebar-search-clear-icon {
   @apply w-3.5 h-3.5;
+}
+
+.sidebar-thread-tree-host {
+  @apply flex-1 min-h-0 overflow-y-auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.sidebar-thread-tree-host::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .sidebar-thread-controls-header-host {

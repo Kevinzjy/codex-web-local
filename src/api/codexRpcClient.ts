@@ -1,4 +1,4 @@
-import type { RpcEnvelope, RpcMethodCatalog } from '../types/codex'
+import type { RpcEnvelope, RpcMethodCatalog, UiServerRequestId } from '../types/codex'
 import { CodexApiError, extractErrorMessage } from './codexErrors'
 
 type RpcRequestBody = {
@@ -13,7 +13,7 @@ export type RpcNotification = {
 }
 
 type ServerRequestReplyBody = {
-  id: number
+  id: UiServerRequestId
   result?: unknown
   error?: {
     code?: number

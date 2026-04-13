@@ -25,8 +25,12 @@ Web interface for Codex app-server
 
 Options:
   -p, --port <port>    port to listen on (default: "3000")
+  --host <host>        host to listen on (default: "0.0.0.0")
   --password <pass>    set a specific password
   --no-password        disable password protection
+  --http-proxy <url>   HTTP proxy passed to codex app-server
+  --https-proxy <url>  HTTPS proxy passed to codex app-server
+  --all-proxy <url>    SOCKS/ALL proxy passed to codex app-server
   -h, --help           display help for command
 ```
 
@@ -44,6 +48,12 @@ codex-web-local --password my-secret
 
 # Start without password protection (use only on trusted networks)
 codex-web-local --no-password
+
+# Start with proxy settings for codex app-server
+codex-web-local \
+  --http-proxy http://127.0.0.1:1087 \
+  --https-proxy http://127.0.0.1:1087 \
+  --all-proxy socks5://127.0.0.1:1080
 ```
 
 When started with password protection (default), the server prints the password to the console. Open the URL in your browser, enter the password, and you're in.

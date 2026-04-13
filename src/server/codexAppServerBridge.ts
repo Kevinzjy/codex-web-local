@@ -12,7 +12,7 @@ type JsonRpcCall = {
 }
 
 type JsonRpcResponse = {
-  id?: number
+  id?: ServerRequestId
   result?: unknown
   error?: {
     code: number
@@ -36,10 +36,40 @@ type ServerRequestReply = {
 }
 
 type PendingServerRequest = {
-  id: number
+  id: ServerRequestId
   method: string
   params: unknown
   receivedAtIso: string
+}
+
+type ServerRequestId = string | number
+
+export type ProxyOptions = {
+  httpProxy?: string
+  httpsProxy?: string
+  allProxy?: string
+}
+
+export type CodexBridgeOptions = {
+  proxy?: ProxyOptions
+}
+
+function addProxyEnv(env: Record<string, string>, name: string, value: string | undefined): void {
+  const trimmed = value?.trim()
+  if (!trimmed) return
+
+  env[name] = trimmed
+  env[name.toUpperCase()] = trimmed
+}
+
+function createProxyEnv(proxy: ProxyOptions = {}): Record<string, string> {
+  const env: Record<string, string> = {}
+
+  addProxyEnv(env, 'http_proxy', proxy.httpProxy)
+  addProxyEnv(env, 'https_proxy', proxy.httpsProxy)
+  addProxyEnv(env, 'all_proxy', proxy.allProxy)
+
+  return env
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -96,13 +126,21 @@ class AppServerProcess {
   private stopping = false
   private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason?: unknown) => void }>()
   private readonly notificationListeners = new Set<(value: { method: string; params: unknown }) => void>()
-  private readonly pendingServerRequests = new Map<number, PendingServerRequest>()
+  private readonly pendingServerRequests = new Map<ServerRequestId, PendingServerRequest>()
+
+  constructor(private readonly proxyEnv: Record<string, string>) {}
 
   private start(): void {
     if (this.process) return
 
     this.stopping = false
-    const proc = spawn('codex', ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const proc = spawn('codex', ['app-server'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        ...this.proxyEnv,
+      },
+    })
     this.process = proc
 
     proc.stdout.setEncoding('utf8')
@@ -180,7 +218,7 @@ class AppServerProcess {
     }
 
     // Handle server-initiated JSON-RPC requests (approvals, dynamic tool calls, etc.).
-    if (typeof message.id === 'number' && typeof message.method === 'string') {
+    if ((typeof message.id === 'number' || typeof message.id === 'string') && typeof message.method === 'string') {
       this.handleServerRequest(message.id, message.method, message.params ?? null)
     }
   }
@@ -191,7 +229,7 @@ class AppServerProcess {
     }
   }
 
-  private sendServerRequestReply(requestId: number, reply: ServerRequestReply): void {
+  private sendServerRequestReply(requestId: ServerRequestId, reply: ServerRequestReply): void {
     if (reply.error) {
       this.sendLine({
         jsonrpc: '2.0',
@@ -208,7 +246,7 @@ class AppServerProcess {
     })
   }
 
-  private resolvePendingServerRequest(requestId: number, reply: ServerRequestReply): void {
+  private resolvePendingServerRequest(requestId: ServerRequestId, reply: ServerRequestReply): void {
     const pendingRequest = this.pendingServerRequests.get(requestId)
     if (!pendingRequest) {
       throw new Error(`No pending server request found for id ${String(requestId)}`)
@@ -233,7 +271,7 @@ class AppServerProcess {
     })
   }
 
-  private handleServerRequest(requestId: number, method: string, params: unknown): void {
+  private handleServerRequest(requestId: ServerRequestId, method: string, params: unknown): void {
     const pendingRequest: PendingServerRequest = {
       id: requestId,
       method,
@@ -298,8 +336,8 @@ class AppServerProcess {
     }
 
     const id = body.id
-    if (typeof id !== 'number' || !Number.isInteger(id)) {
-      throw new Error('Invalid response payload: "id" must be an integer')
+    if (typeof id !== 'number' && typeof id !== 'string') {
+      throw new Error('Invalid response payload: "id" must be a string or number')
     }
 
     const rawError = asRecord(body.error)
@@ -370,21 +408,27 @@ class MethodCatalog {
   private methodCache: string[] | null = null
   private notificationCache: string[] | null = null
 
+  constructor(private readonly proxyEnv: Record<string, string>) {}
+
   private async runGenerateSchemaCommand(outDir: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
-      const process = spawn('codex', ['app-server', 'generate-json-schema', '--out', outDir], {
+      const proc = spawn('codex', ['app-server', 'generate-json-schema', '--out', outDir], {
         stdio: ['ignore', 'ignore', 'pipe'],
+        env: {
+          ...process.env,
+          ...this.proxyEnv,
+        },
       })
 
       let stderr = ''
 
-      process.stderr.setEncoding('utf8')
-      process.stderr.on('data', (chunk: string) => {
+      proc.stderr.setEncoding('utf8')
+      proc.stderr.on('data', (chunk: string) => {
         stderr += chunk
       })
 
-      process.on('error', reject)
-      process.on('exit', (code) => {
+      proc.on('error', reject)
+      proc.on('exit', (code) => {
         if (code === 0) {
           resolve()
           return
@@ -483,7 +527,7 @@ type SharedBridgeState = {
 
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
 
-function getSharedBridgeState(): SharedBridgeState {
+function getSharedBridgeState(options: CodexBridgeOptions = {}): SharedBridgeState {
   const globalScope = globalThis as typeof globalThis & {
     [SHARED_BRIDGE_KEY]?: SharedBridgeState
   }
@@ -491,16 +535,17 @@ function getSharedBridgeState(): SharedBridgeState {
   const existing = globalScope[SHARED_BRIDGE_KEY]
   if (existing) return existing
 
+  const proxyEnv = createProxyEnv(options.proxy)
   const created: SharedBridgeState = {
-    appServer: new AppServerProcess(),
-    methodCatalog: new MethodCatalog(),
+    appServer: new AppServerProcess(proxyEnv),
+    methodCatalog: new MethodCatalog(proxyEnv),
   }
   globalScope[SHARED_BRIDGE_KEY] = created
   return created
 }
 
-export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
-  const { appServer, methodCatalog } = getSharedBridgeState()
+export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): CodexBridgeMiddleware {
+  const { appServer, methodCatalog } = getSharedBridgeState(options)
 
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     try {

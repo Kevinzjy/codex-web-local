@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import express, { type Express } from 'express'
-import { createCodexBridgeMiddleware } from './codexAppServerBridge.js'
+import { createCodexBridgeMiddleware, type ProxyOptions } from './codexAppServerBridge.js'
 import { createAuthMiddleware } from './authMiddleware.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -9,6 +9,7 @@ const distDir = join(__dirname, '..', 'dist')
 
 export type ServerOptions = {
   password?: string
+  proxy?: ProxyOptions
 }
 
 export type ServerInstance = {
@@ -18,7 +19,7 @@ export type ServerInstance = {
 
 export function createServer(options: ServerOptions = {}): ServerInstance {
   const app = express()
-  const bridge = createCodexBridgeMiddleware()
+  const bridge = createCodexBridgeMiddleware({ proxy: options.proxy })
 
   // 1. Auth middleware (if password is set)
   if (options.password) {

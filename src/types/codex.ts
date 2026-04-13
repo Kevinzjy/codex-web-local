@@ -58,6 +58,19 @@ export type UserInput = {
   url?: string
 }
 
+export type UiComposerImage = {
+  id: string
+  name: string
+  mimeType: string
+  size: number
+  url: string
+}
+
+export type UiComposerDraft = {
+  text: string
+  images: UiComposerImage[]
+}
+
 export type UiThread = {
   id: string
   title: string
@@ -80,8 +93,10 @@ export type UiMessage = {
   isUnhandled?: boolean
 }
 
+export type UiServerRequestId = string | number
+
 export type UiServerRequest = {
-  id: number
+  id: UiServerRequestId
   method: string
   threadId: string
   turnId: string
@@ -91,7 +106,7 @@ export type UiServerRequest = {
 }
 
 export type UiServerRequestReply = {
-  id: number
+  id: UiServerRequestId
   result?: unknown
   error?: {
     code?: number
