@@ -8,7 +8,7 @@ const program = new Command()
   .description('Web interface for Codex app-server')
   .option('-p, --port <port>', 'port to listen on', '3000')
   .option('--host <host>', 'host to listen on', '0.0.0.0')
-  .option('--password <pass>', 'set a specific password')
+  .option('--password <pass>', 'set a specific password (env: CODEX_WEB_LOCAL_PASSWORD)')
   .option('--no-password', 'disable password protection')
   .option('--http-proxy <url>', 'HTTP proxy passed to codex app-server')
   .option('--https-proxy <url>', 'HTTPS proxy passed to codex app-server')
@@ -25,11 +25,21 @@ const opts = program.opts<{
 }>()
 const port = parseInt(opts.port, 10)
 
+const envPasswordRaw = process.env.CODEX_WEB_LOCAL_PASSWORD
+const envPassword =
+  typeof envPasswordRaw === 'string' && envPasswordRaw.trim().length > 0
+    ? envPasswordRaw.trim()
+    : undefined
+
 let password: string | undefined
+let passwordFromEnv = false
 if (opts.password === false) {
   password = undefined
 } else if (typeof opts.password === 'string') {
   password = opts.password
+} else if (envPassword !== undefined) {
+  password = envPassword
+  passwordFromEnv = true
 } else {
   password = generatePassword()
 }
@@ -53,7 +63,11 @@ server.listen(port, opts.host, () => {
   ]
 
   if (password) {
-    lines.push(`  Password: ${password}`)
+    if (passwordFromEnv) {
+      lines.push('  Password: (from CODEX_WEB_LOCAL_PASSWORD)')
+    } else {
+      lines.push(`  Password: ${password}`)
+    }
   }
 
   if (opts.httpProxy || opts.httpsProxy || opts.allProxy) {

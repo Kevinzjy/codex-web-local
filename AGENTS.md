@@ -9,7 +9,8 @@
 - Local development: `make test`
 - Local development with overrides: `make test PORT=3001 HOST=0.0.0.0`
 - Install global package: `make install`
-- Uninstall global package: `make uninstall`
+- systemd user unit + `~/.config/codex-web-local/service.env` template (Linux, after install): `make systemd`
+- Uninstall global package + systemd unit: `make uninstall`
 - Build check: `npm run build`
 - Whitespace check before commit: `git diff --check`
 

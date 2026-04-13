@@ -7,11 +7,11 @@
   "author": "Pavel Voronin",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pavel-voronin/codex-web-local.git"
+    "url": "git+https://github.com/Kevinzjy/codex-web-local.git"
   },
-  "homepage": "https://github.com/pavel-voronin/codex-web-local#readme",
+  "homepage": "https://github.com/Kevinzjy/codex-web-local#readme",
   "bugs": {
-    "url": "https://github.com/pavel-voronin/codex-web-local/issues"
+    "url": "https://github.com/Kevinzjy/codex-web-local/issues"
   },
   "keywords": [
     "codex",
@@ -28,7 +28,8 @@
   },
   "files": [
     "dist/",
-    "dist-cli/"
+    "dist-cli/",
+    "systemd/"
   ],
   "scripts": {
     "dev": "vite",

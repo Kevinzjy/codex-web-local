@@ -1,0 +1,17 @@
+[Unit]
+Description=Codex Web Local (web UI for Codex app-server)
+Documentation=https://github.com/Kevinzjy/codex-web-local
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Binary path is filled by `make systemd` (see Makefile).
+ExecStart=@@CODEX_WEB_LOCAL_BIN@@ --host 0.0.0.0 --port 3000
+# Optional: CODEX_WEB_LOCAL_PASSWORD, HTTP_PROXY, HTTPS_PROXY, ALL_PROXY (see systemd/service.env.example).
+EnvironmentFile=-%h/.config/codex-web-local/service.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
