@@ -363,7 +363,7 @@ export async function fetchPendingServerRequests(): Promise<unknown[]> {
 }
 
 export async function fetchChatState(): Promise<ChatState> {
-  const response = await fetch('/codex-api/chat-state')
+  const response = await fetch('/codex-api/chat-state', { cache: 'no-store' })
 
   let payload: unknown = null
   try {

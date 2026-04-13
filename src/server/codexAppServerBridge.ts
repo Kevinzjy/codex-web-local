@@ -100,9 +100,17 @@ function getErrorMessage(payload: unknown, fallback: string): string {
   return fallback
 }
 
-function setJson(res: ServerResponse, statusCode: number, payload: unknown): void {
+function setJson(
+  res: ServerResponse,
+  statusCode: number,
+  payload: unknown,
+  options?: { cacheControl?: string },
+): void {
   res.statusCode = statusCode
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  if (options?.cacheControl) {
+    res.setHeader('Cache-Control', options.cacheControl)
+  }
   res.end(JSON.stringify(payload))
 }
 
@@ -616,7 +624,9 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
 
       if (req.method === 'GET' && url.pathname === '/codex-api/chat-state') {
         const payload = await chatStateStore.read()
-        setJson(res, 200, payload)
+        setJson(res, 200, payload, {
+          cacheControl: 'no-store, no-cache, must-revalidate',
+        })
         return
       }
 

@@ -42,6 +42,11 @@ The installed CLI also accepts proxy flags that are passed to `codex app-server`
 
 ## Development Notes
 
+### Git and commits
+
+- **Do not create git commits without explicit user instruction.** Completing an implementation does not imply permission to commit. If the user asks to commit a specific change set first and then work on a follow-up (e.g. style or UX fixes), commit only what they asked for; leave subsequent work uncommitted until they confirm or ask to commit it.
+- When in doubt, leave changes unstaged or uncommitted and summarize the diff instead.
+
 - Keep edits scoped. There may be uncommitted user changes in the tree; do not revert unrelated changes.
 - Use existing Vue composition patterns and local helper functions before introducing new abstractions.
 - `npm run build` runs both frontend type checking/build and CLI bundling; use it before reporting a completed code change.

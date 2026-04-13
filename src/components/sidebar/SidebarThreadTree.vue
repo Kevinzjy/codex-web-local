@@ -1274,6 +1274,11 @@ watch(
 watch(
   threadById,
   (map) => {
+    // While `groups` is still empty or not yet hydrated, `threadById` is empty. Pruning pinned
+    // ids against an empty map would clear all pins and PATCH [] to the server before onMounted
+    // can merge remote state — wiping persisted chat-state on every reload.
+    if (map.size === 0) return
+
     const nextPinned = pinnedThreadIds.value.filter((threadId) => map.has(threadId))
     if (nextPinned.length !== pinnedThreadIds.value.length) {
       pinnedThreadIds.value = nextPinned
