@@ -244,8 +244,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
+import { getChatState, patchChatState, updatePinnedThreadIds } from '../../api/codexGateway'
 import type { UiProjectGroup, UiThread } from '../../types/codex'
 import IconTablerArchive from '../icons/IconTablerArchive.vue'
 import IconTablerChevronDown from '../icons/IconTablerChevronDown.vue'
@@ -387,14 +388,116 @@ function loadPinnedThreadIds(): string[] {
   }
 }
 
+function normalizePinnedThreadIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const threadIds: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const normalized = item.trim()
+    if (!normalized || threadIds.includes(normalized)) continue
+    threadIds.push(normalized)
+  }
+  return threadIds
+}
+
+function normalizeCollapsedProjectsRecord(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record: Record<string, boolean> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (raw === true) {
+      record[key] = true
+    } else if (raw === false) {
+      record[key] = false
+    }
+  }
+  return record
+}
+
 collapsedProjects.value = loadCollapsedState()
 pinnedThreadIds.value = loadPinnedThreadIds()
+const isApplyingRemotePinnedState = ref(false)
+const isApplyingRemoteCollapsedState = ref(false)
+let lastPinnedStateSerialized = JSON.stringify(pinnedThreadIds.value)
+let lastCollapsedSerialized = JSON.stringify(collapsedProjects.value)
+let pinnedSyncRequestId = 0
+let collapsedSyncRequestId = 0
+
+async function syncPinnedThreadIdsToServer(nextIds: string[]): Promise<void> {
+  const requestId = ++pinnedSyncRequestId
+  try {
+    const saved = await updatePinnedThreadIds(nextIds)
+    if (requestId !== pinnedSyncRequestId) return
+    const normalized = normalizePinnedThreadIds(saved.pinnedThreadIds)
+    isApplyingRemotePinnedState.value = true
+    pinnedThreadIds.value = normalized
+    lastPinnedStateSerialized = JSON.stringify(normalized)
+  } catch {
+    // Keep local state if sync fails; user can continue pin/unpin without blocking.
+  } finally {
+    isApplyingRemotePinnedState.value = false
+  }
+}
+
+async function syncCollapsedProjectsToServer(next: Record<string, boolean>): Promise<void> {
+  const requestId = ++collapsedSyncRequestId
+  try {
+    const saved = await patchChatState({ collapsedProjects: next })
+    if (requestId !== collapsedSyncRequestId) return
+    const applied = normalizeCollapsedProjectsRecord(saved.collapsedProjects)
+    isApplyingRemoteCollapsedState.value = true
+    collapsedProjects.value = applied
+    lastCollapsedSerialized = JSON.stringify(applied)
+  } catch {
+    // Keep local state if sync fails.
+  } finally {
+    isApplyingRemoteCollapsedState.value = false
+  }
+}
+
+onMounted(async () => {
+  const localPinned = [...pinnedThreadIds.value]
+  const localCollapsed = { ...collapsedProjects.value }
+  try {
+    const chatState = await getChatState()
+    const remotePinned = normalizePinnedThreadIds(chatState.pinnedThreadIds)
+    const remoteCollapsed = normalizeCollapsedProjectsRecord(chatState.collapsedProjects)
+
+    if (remotePinned.length > 0) {
+      isApplyingRemotePinnedState.value = true
+      pinnedThreadIds.value = remotePinned
+      lastPinnedStateSerialized = JSON.stringify(remotePinned)
+    } else if (localPinned.length > 0) {
+      await syncPinnedThreadIdsToServer(localPinned)
+    }
+
+    if (Object.keys(remoteCollapsed).length > 0) {
+      isApplyingRemoteCollapsedState.value = true
+      collapsedProjects.value = remoteCollapsed
+      lastCollapsedSerialized = JSON.stringify(remoteCollapsed)
+    } else if (Object.keys(localCollapsed).length > 0) {
+      await syncCollapsedProjectsToServer(localCollapsed)
+    }
+  } catch {
+    // Fall back to local state when remote chat-state is temporarily unavailable.
+  } finally {
+    isApplyingRemotePinnedState.value = false
+    isApplyingRemoteCollapsedState.value = false
+  }
+})
 
 watch(
   collapsedProjects,
   (value) => {
     if (typeof window === 'undefined') return
-    window.localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(value))
+    const normalized = normalizeCollapsedProjectsRecord(value)
+    const serialized = JSON.stringify(normalized)
+    window.localStorage.setItem(COLLAPSED_STORAGE_KEY, serialized)
+
+    if (serialized === lastCollapsedSerialized) return
+    lastCollapsedSerialized = serialized
+    if (isApplyingRemoteCollapsedState.value) return
+    void syncCollapsedProjectsToServer(normalized)
   },
   { deep: true },
 )
@@ -403,7 +506,14 @@ watch(
   pinnedThreadIds,
   (value) => {
     if (typeof window === 'undefined') return
-    window.localStorage.setItem(PINNED_THREADS_STORAGE_KEY, JSON.stringify(value))
+    const normalized = normalizePinnedThreadIds(value)
+    const serialized = JSON.stringify(normalized)
+    window.localStorage.setItem(PINNED_THREADS_STORAGE_KEY, serialized)
+
+    if (serialized === lastPinnedStateSerialized) return
+    lastPinnedStateSerialized = serialized
+    if (isApplyingRemotePinnedState.value) return
+    void syncPinnedThreadIdsToServer(normalized)
   },
   { deep: true },
 )
@@ -1159,6 +1269,17 @@ watch(
       measuredHeightByProject.value = nextMeasuredHeights
     }
   },
+)
+
+watch(
+  threadById,
+  (map) => {
+    const nextPinned = pinnedThreadIds.value.filter((threadId) => map.has(threadId))
+    if (nextPinned.length !== pinnedThreadIds.value.length) {
+      pinnedThreadIds.value = nextPinned
+    }
+  },
+  { immediate: true },
 )
 
 watch(openProjectMenuId, (projectName) => {

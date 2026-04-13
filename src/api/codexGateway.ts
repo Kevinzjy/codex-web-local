@@ -1,11 +1,15 @@
 import {
+  fetchChatState,
   fetchGitStatus,
   fetchRpcMethodCatalog,
   fetchRpcNotificationCatalog,
   fetchPendingServerRequests,
+  patchChatState as patchChatStateRpc,
   rpcCall,
   respondServerRequest,
   subscribeRpcNotifications,
+  type ChatState,
+  type ChatStatePatch,
   type RpcNotification,
 } from './codexRpcClient'
 import type {
@@ -240,5 +244,19 @@ export async function getAccountRateLimits(): Promise<GetAccountRateLimitsRespon
 export async function getGitStatus(cwd: string): Promise<UiGitStatus> {
   return fetchGitStatus(cwd)
 }
+
+export async function getChatState(): Promise<ChatState> {
+  return fetchChatState()
+}
+
+export async function patchChatState(patch: ChatStatePatch): Promise<ChatState> {
+  return patchChatStateRpc(patch)
+}
+
+export async function updatePinnedThreadIds(pinnedThreadIds: string[]): Promise<ChatState> {
+  return patchChatStateRpc({ pinnedThreadIds })
+}
+
+export type { ChatState, ChatStatePatch }
 
 // `thread/loaded/list` returns sessions loaded in memory, not currently running turns.

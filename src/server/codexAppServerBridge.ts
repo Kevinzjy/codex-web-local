@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { ChatStateStore, type ChatStatePatch } from './chatStateStore.js'
 import { cwdIsKnownCodexWorkspace } from './codexThreadGitAllowance.js'
 import { getGitStatusForCwd } from './gitStatus.js'
 import { mkdtemp, readFile } from 'node:fs/promises'
@@ -525,6 +526,7 @@ type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: 
 type SharedBridgeState = {
   appServer: AppServerProcess
   methodCatalog: MethodCatalog
+  chatStateStore: ChatStateStore
 }
 
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
@@ -541,13 +543,14 @@ function getSharedBridgeState(options: CodexBridgeOptions = {}): SharedBridgeSta
   const created: SharedBridgeState = {
     appServer: new AppServerProcess(proxyEnv),
     methodCatalog: new MethodCatalog(proxyEnv),
+    chatStateStore: new ChatStateStore(),
   }
   globalScope[SHARED_BRIDGE_KEY] = created
   return created
 }
 
 export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): CodexBridgeMiddleware {
-  const { appServer, methodCatalog } = getSharedBridgeState(options)
+  const { appServer, methodCatalog, chatStateStore } = getSharedBridgeState(options)
 
   const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     try {
@@ -608,6 +611,42 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
             cwdIsKnownCodexWorkspace((method, params) => appServer.rpc(method, params), resolved, requested),
         })
         setJson(res, 200, payload)
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/chat-state') {
+        const payload = await chatStateStore.read()
+        setJson(res, 200, payload)
+        return
+      }
+
+      if (req.method === 'PATCH' && url.pathname === '/codex-api/chat-state') {
+        const payload = await readJsonBody(req)
+        const body = asRecord(payload)
+        if (!body) {
+          setJson(res, 400, { error: 'Invalid body: expected object' })
+          return
+        }
+
+        const patch: ChatStatePatch = {}
+        if ('pinnedThreadIds' in body) {
+          patch.pinnedThreadIds = body.pinnedThreadIds as ChatStatePatch['pinnedThreadIds']
+        }
+        if ('collapsedProjects' in body) {
+          patch.collapsedProjects = body.collapsedProjects as ChatStatePatch['collapsedProjects']
+        }
+        if ('projectOrder' in body) {
+          patch.projectOrder = body.projectOrder as ChatStatePatch['projectOrder']
+        }
+        if ('projectDisplayNames' in body) {
+          patch.projectDisplayNames = body.projectDisplayNames as ChatStatePatch['projectDisplayNames']
+        }
+        if ('manualUnreadByThreadId' in body) {
+          patch.manualUnreadByThreadId = body.manualUnreadByThreadId as ChatStatePatch['manualUnreadByThreadId']
+        }
+
+        const saved = await chatStateStore.patch(patch)
+        setJson(res, 200, saved)
         return
       }
 

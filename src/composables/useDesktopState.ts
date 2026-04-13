@@ -1,11 +1,13 @@
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   archiveThread,
   getAccountRateLimits,
   getAvailableModelIds,
   getCurrentModelConfig,
+  getChatState,
   getGitStatus,
   getPendingServerRequests,
+  patchChatState,
   interruptThreadTurn,
   replyToServerRequest,
   getThreadGroups,
@@ -72,6 +74,7 @@ const AUTO_REFRESH_ENABLED_STORAGE_KEY = 'codex-web-local.auto-refresh-enabled.v
 const EVENT_SYNC_DEBOUNCE_MS = 220
 const AUTO_REFRESH_INTERVAL_MS = 4000
 const GIT_STATUS_MIN_GAP_MS = 2000
+const CHAT_STATE_SYNC_DEBOUNCE_MS = 450
 const REASONING_EFFORT_OPTIONS: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
 const GLOBAL_SERVER_REQUEST_SCOPE = '__global__'
 
@@ -277,6 +280,18 @@ function loadBooleanRecord(storageKey: string): Record<string, boolean> {
 function saveBooleanRecord(storageKey: string, record: Record<string, boolean>): void {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(storageKey, JSON.stringify(record))
+}
+
+function serializeDesktopChatSlice(
+  order: string[],
+  display: Record<string, string>,
+  unread: Record<string, boolean>,
+): string {
+  return JSON.stringify({
+    projectOrder: order,
+    projectDisplayNames: display,
+    manualUnreadByThreadId: unread,
+  })
 }
 
 function mergeProjectOrder(previousOrder: string[], incomingGroups: UiProjectGroup[]): string[] {
@@ -2327,6 +2342,111 @@ export function useDesktopState() {
     turnErrorByThreadId.value = {}
     activeTurnIdByThreadId.value = {}
   }
+
+  let desktopChatStateSyncTimer: number | null = null
+  let lastPushedDesktopChatState = ''
+  const isApplyingRemoteDesktopChatState = ref(false)
+
+  function schedulePushDesktopChatState(): void {
+    if (typeof window === 'undefined') return
+    if (desktopChatStateSyncTimer !== null) {
+      window.clearTimeout(desktopChatStateSyncTimer)
+    }
+    desktopChatStateSyncTimer = window.setTimeout(() => {
+      desktopChatStateSyncTimer = null
+      void pushDesktopChatStateNow()
+    }, CHAT_STATE_SYNC_DEBOUNCE_MS)
+  }
+
+  async function pushDesktopChatStateNow(): Promise<void> {
+    if (isApplyingRemoteDesktopChatState.value) return
+    const snapshot = serializeDesktopChatSlice(
+      projectOrder.value,
+      projectDisplayNameById.value,
+      manualUnreadByThreadId.value,
+    )
+    if (snapshot === lastPushedDesktopChatState) return
+    try {
+      const saved = await patchChatState({
+        projectOrder: [...projectOrder.value],
+        projectDisplayNames: { ...projectDisplayNameById.value },
+        manualUnreadByThreadId: { ...manualUnreadByThreadId.value },
+      })
+      lastPushedDesktopChatState = serializeDesktopChatSlice(
+        saved.projectOrder,
+        saved.projectDisplayNames,
+        saved.manualUnreadByThreadId,
+      )
+    } catch {
+      // Keep local state when the bridge is unavailable.
+    }
+  }
+
+  onMounted(async () => {
+    if (typeof window === 'undefined') return
+    isApplyingRemoteDesktopChatState.value = true
+    try {
+      const remote = await getChatState()
+      const hasDesktopRemote =
+        remote.projectOrder.length > 0 ||
+        Object.keys(remote.projectDisplayNames).length > 0 ||
+        Object.keys(remote.manualUnreadByThreadId).length > 0
+
+      if (hasDesktopRemote) {
+        projectOrder.value = [...remote.projectOrder]
+        projectDisplayNameById.value = { ...remote.projectDisplayNames }
+        manualUnreadByThreadId.value = { ...remote.manualUnreadByThreadId }
+        saveProjectOrder(projectOrder.value)
+        saveProjectDisplayNames(projectDisplayNameById.value)
+        saveBooleanRecord(MANUAL_UNREAD_STORAGE_KEY, manualUnreadByThreadId.value)
+        applyThreadFlags()
+        lastPushedDesktopChatState = serializeDesktopChatSlice(
+          projectOrder.value,
+          projectDisplayNameById.value,
+          manualUnreadByThreadId.value,
+        )
+        return
+      }
+
+      const localSnapshot = serializeDesktopChatSlice(
+        projectOrder.value,
+        projectDisplayNameById.value,
+        manualUnreadByThreadId.value,
+      )
+      if (localSnapshot === serializeDesktopChatSlice([], {}, {})) {
+        lastPushedDesktopChatState = localSnapshot
+        return
+      }
+
+      const saved = await patchChatState({
+        projectOrder: [...projectOrder.value],
+        projectDisplayNames: { ...projectDisplayNameById.value },
+        manualUnreadByThreadId: { ...manualUnreadByThreadId.value },
+      })
+      lastPushedDesktopChatState = serializeDesktopChatSlice(
+        saved.projectOrder,
+        saved.projectDisplayNames,
+        saved.manualUnreadByThreadId,
+      )
+    } catch {
+      lastPushedDesktopChatState = serializeDesktopChatSlice(
+        projectOrder.value,
+        projectDisplayNameById.value,
+        manualUnreadByThreadId.value,
+      )
+    } finally {
+      isApplyingRemoteDesktopChatState.value = false
+    }
+  })
+
+  watch(
+    [projectOrder, projectDisplayNameById, manualUnreadByThreadId],
+    () => {
+      if (isApplyingRemoteDesktopChatState.value) return
+      schedulePushDesktopChatState()
+    },
+    { deep: true },
+  )
 
   return {
     projectGroups,

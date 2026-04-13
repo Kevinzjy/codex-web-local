@@ -21,10 +21,112 @@ type ServerRequestReplyBody = {
   }
 }
 
+export type ChatState = {
+  pinnedThreadIds: string[]
+  collapsedProjects: Record<string, boolean>
+  projectOrder: string[]
+  projectDisplayNames: Record<string, string>
+  manualUnreadByThreadId: Record<string, boolean>
+  updatedAtIso: string
+}
+
+export type ChatStatePatch = Partial<
+  Pick<ChatState, 'pinnedThreadIds' | 'collapsedProjects' | 'projectOrder' | 'projectDisplayNames' | 'manualUnreadByThreadId'>
+>
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null
+}
+
+function normalizePinnedThreadIdsFromUnknown(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const pinnedThreadIds: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const normalized = item.trim()
+    if (!normalized || pinnedThreadIds.includes(normalized)) continue
+    pinnedThreadIds.push(normalized)
+  }
+  return pinnedThreadIds
+}
+
+function normalizeCollapsedProjectsFromUnknown(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record: Record<string, boolean> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (raw === true) {
+      record[key] = true
+    } else if (raw === false) {
+      record[key] = false
+    }
+  }
+  return record
+}
+
+function normalizeProjectOrderFromUnknown(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const order: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const normalized = item.trim()
+    if (!normalized || order.includes(normalized)) continue
+    order.push(normalized)
+  }
+  return order
+}
+
+function normalizeProjectDisplayNamesFromUnknown(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record: Record<string, string> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (typeof raw !== 'string') continue
+    record[key] = raw
+  }
+  return record
+}
+
+function normalizeManualUnreadFromUnknown(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record: Record<string, boolean> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (raw === true) {
+      record[key] = true
+    }
+  }
+  return record
+}
+
+function parseChatStatePayload(payload: unknown): ChatState {
+  const record = asRecord(payload)
+  const updatedAtIso =
+    record && typeof record.updatedAtIso === 'string' && record.updatedAtIso.length > 0
+      ? record.updatedAtIso
+      : new Date(0).toISOString()
+
+  if (!record) {
+    return {
+      pinnedThreadIds: [],
+      collapsedProjects: {},
+      projectOrder: [],
+      projectDisplayNames: {},
+      manualUnreadByThreadId: {},
+      updatedAtIso,
+    }
+  }
+
+  return {
+    pinnedThreadIds: normalizePinnedThreadIdsFromUnknown(record.pinnedThreadIds),
+    collapsedProjects: normalizeCollapsedProjectsFromUnknown(record.collapsedProjects),
+    projectOrder: normalizeProjectOrderFromUnknown(record.projectOrder),
+    projectDisplayNames: normalizeProjectDisplayNamesFromUnknown(record.projectDisplayNames),
+    manualUnreadByThreadId: normalizeManualUnreadFromUnknown(record.manualUnreadByThreadId),
+    updatedAtIso,
+  }
 }
 
 export async function rpcCall<T>(method: string, params?: unknown): Promise<T> {
@@ -258,4 +360,66 @@ export async function fetchPendingServerRequests(): Promise<unknown[]> {
   const record = asRecord(payload)
   const data = record?.data
   return Array.isArray(data) ? data : []
+}
+
+export async function fetchChatState(): Promise<ChatState> {
+  const response = await fetch('/codex-api/chat-state')
+
+  let payload: unknown = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+
+  if (!response.ok) {
+    throw new CodexApiError(
+      extractErrorMessage(payload, `Chat state request failed with HTTP ${response.status}`),
+      {
+        code: 'http_error',
+        method: 'chat-state',
+        status: response.status,
+      },
+    )
+  }
+
+  return parseChatStatePayload(payload)
+}
+
+export async function patchChatState(patch: ChatStatePatch): Promise<ChatState> {
+  let response: Response
+  try {
+    response = await fetch('/codex-api/chat-state', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(patch),
+    })
+  } catch (error) {
+    throw new CodexApiError(
+      error instanceof Error ? error.message : 'Failed to patch chat state',
+      { code: 'network_error', method: 'chat-state' },
+    )
+  }
+
+  let payload: unknown = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+
+  if (!response.ok) {
+    throw new CodexApiError(
+      extractErrorMessage(payload, `Chat state patch failed with HTTP ${response.status}`),
+      {
+        code: 'http_error',
+        method: 'chat-state',
+        status: response.status,
+      },
+    )
+  }
+
+  return parseChatStatePayload(payload)
 }
