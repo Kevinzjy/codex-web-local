@@ -64,11 +64,70 @@ codex-web-local \
 
 When started with password protection (default), the server prints the password to the console. Open the URL in your browser, enter the password, and you're in.
 
-## systemd (Linux)
+## systemd user service (Linux)
 
-After **`make install`**, run **`make systemd`**. It installs the user unit, creates **`~/.config/codex-web-local/service.env`** from a commented template on first run (existing file is left untouched), enables and starts the service. Edit **`service.env`** (uncomment `CODEX_WEB_LOCAL_PASSWORD`, proxy lines, etc.), then **`systemctl --user restart codex-web-local.service`**.
+Run `codex-web-local` in the background with a **per-user** systemd unit (no root required for the app itself).
 
-Skip auto-start: `make systemd SYSTEMD_USER_ENABLE=0`. One-step removal: **`make uninstall`**. Logs: `journalctl --user -u codex-web-local.service -f`. Headless/SSH: you may need `loginctl enable-linger "$USER"` once.
+### Prerequisites
+
+- You have already run `make install` so the `codex-web-local` binary is on your `PATH` (the unit file points at the installed CLI).
+
+### Install the unit
+
+```bash
+make systemd
+```
+
+This will:
+
+- Install `codex-web-local.service` under `~/.config/systemd/user/`.
+- On **first** run only, copy `systemd/service.env.example` to `~/.config/codex-web-local/service.env` (an existing `service.env` is never overwritten).
+- Enable and start the user service (default).
+
+### Install without enabling or starting
+
+To only install the unit file and env template **without** `systemctl --user enable --now`:
+
+```bash
+make systemd SYSTEMD_USER_ENABLE=0
+```
+
+### Configure
+
+1. Edit `~/.config/codex-web-local/service.env`. Uncomment and set variables as needed, for example:
+   - `CODEX_WEB_LOCAL_PASSWORD` — web UI password when you do not pass `--password` on the CLI.
+   - `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` if your Codex traffic should use proxies.
+2. Apply changes:
+
+   ```bash
+   systemctl --user restart codex-web-local.service
+   ```
+
+### Logs
+
+Follow logs:
+
+```bash
+journalctl --user -u codex-web-local.service -f
+```
+
+### Uninstall
+
+From the same git checkout:
+
+```bash
+make uninstall
+```
+
+This removes the user unit and runs `npm uninstall -g`; it does **not** delete `~/.config/codex-web-local/service.env` (may contain secrets).
+
+### Headless or SSH-only use
+
+User services may not stay running after logout unless lingering is enabled for your user (typical on servers or SSH sessions):
+
+```bash
+loginctl enable-linger "$USER"
+```
 
 ## Contributing
 
