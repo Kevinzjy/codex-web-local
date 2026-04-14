@@ -680,6 +680,9 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
         if ('projectDisplayNames' in body) {
           patch.projectDisplayNames = body.projectDisplayNames as ChatStatePatch['projectDisplayNames']
         }
+        if ('projectCwdByProjectName' in body) {
+          patch.projectCwdByProjectName = body.projectCwdByProjectName as ChatStatePatch['projectCwdByProjectName']
+        }
         if ('manualUnreadByThreadId' in body) {
           patch.manualUnreadByThreadId = body.manualUnreadByThreadId as ChatStatePatch['manualUnreadByThreadId']
         }

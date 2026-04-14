@@ -287,6 +287,7 @@ const {
   markThreadReadById,
   removeProject,
   reorderProject,
+  getProjectFolderCwd,
   toggleAutoRefreshTimer,
   startPolling,
   stopPolling,
@@ -351,7 +352,7 @@ const newThreadFolderOptions = computed(() => {
   const seenCwds = new Set<string>()
 
   for (const group of projectGroups.value) {
-    const cwd = group.threads[0]?.cwd?.trim() ?? ''
+    const cwd = getProjectFolderCwd(group.projectName).trim()
     if (!cwd || seenCwds.has(cwd)) continue
     seenCwds.add(cwd)
     options.push({
@@ -423,10 +424,9 @@ function onMarkThreadRead(threadId: string): void {
 }
 
 function onStartNewThread(projectName: string): void {
-  const projectGroup = projectGroups.value.find((group) => group.projectName === projectName)
-  const projectCwd = projectGroup?.threads[0]?.cwd?.trim() ?? ''
+  const projectCwd = getProjectFolderCwd(projectName)
   if (projectCwd) {
-    newThreadCwd.value = projectCwd
+    onAddNewThreadProject(projectCwd)
   }
   if (isHomeRoute.value) return
   void router.push({ name: 'home' })
@@ -435,7 +435,7 @@ function onStartNewThread(projectName: string): void {
 function onStartNewThreadFromToolbar(): void {
   const cwd = selectedThread.value?.cwd?.trim() ?? ''
   if (cwd) {
-    newThreadCwd.value = cwd
+    onAddNewThreadProject(cwd)
   }
   if (isHomeRoute.value) return
   void router.push({ name: 'home' })

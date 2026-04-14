@@ -11,6 +11,8 @@ type ChatStateDocument = {
   collapsedProjects: Record<string, boolean>
   projectOrder: string[]
   projectDisplayNames: Record<string, string>
+  /** Last-known absolute cwd per project basename key (survives zero-thread project rows). */
+  projectCwdByProjectName: Record<string, string>
   manualUnreadByThreadId: Record<string, boolean>
   threadPermissionModeByThreadId: Record<string, ThreadPermissionMode>
   threadFullAccessAcknowledgedByThreadId: Record<string, boolean>
@@ -21,6 +23,7 @@ export type ChatStatePayload = {
   collapsedProjects: Record<string, boolean>
   projectOrder: string[]
   projectDisplayNames: Record<string, string>
+  projectCwdByProjectName: Record<string, string>
   manualUnreadByThreadId: Record<string, boolean>
   threadPermissionModeByThreadId: Record<string, ThreadPermissionMode>
   threadFullAccessAcknowledgedByThreadId: Record<string, boolean>
@@ -34,6 +37,7 @@ export type ChatStatePatch = Partial<
     | 'collapsedProjects'
     | 'projectOrder'
     | 'projectDisplayNames'
+    | 'projectCwdByProjectName'
     | 'manualUnreadByThreadId'
     | 'threadPermissionModeByThreadId'
     | 'threadFullAccessAcknowledgedByThreadId'
@@ -102,6 +106,20 @@ function normalizeProjectDisplayNames(value: unknown): Record<string, string> {
   return record
 }
 
+function normalizeProjectCwdByProjectName(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+
+  const record: Record<string, string> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (typeof raw !== 'string') continue
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    record[key] = trimmed
+  }
+  return record
+}
+
 function normalizeManualUnread(value: unknown): Record<string, boolean> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
 
@@ -147,6 +165,7 @@ function toPayload(doc: ChatStateDocument): ChatStatePayload {
     collapsedProjects: { ...doc.collapsedProjects },
     projectOrder: [...doc.projectOrder],
     projectDisplayNames: { ...doc.projectDisplayNames },
+    projectCwdByProjectName: { ...doc.projectCwdByProjectName },
     manualUnreadByThreadId: { ...doc.manualUnreadByThreadId },
     threadPermissionModeByThreadId: { ...doc.threadPermissionModeByThreadId },
     threadFullAccessAcknowledgedByThreadId: { ...doc.threadFullAccessAcknowledgedByThreadId },
@@ -162,6 +181,7 @@ function createDefaultDocument(): ChatStateDocument {
     collapsedProjects: {},
     projectOrder: [],
     projectDisplayNames: {},
+    projectCwdByProjectName: {},
     manualUnreadByThreadId: {},
     threadPermissionModeByThreadId: {},
     threadFullAccessAcknowledgedByThreadId: {},
@@ -187,6 +207,7 @@ async function readDocument(path: string): Promise<ChatStateDocument> {
       collapsedProjects: normalizeCollapsedProjects(record.collapsedProjects),
       projectOrder: normalizeProjectOrder(record.projectOrder),
       projectDisplayNames: normalizeProjectDisplayNames(record.projectDisplayNames),
+      projectCwdByProjectName: normalizeProjectCwdByProjectName(record.projectCwdByProjectName),
       manualUnreadByThreadId: normalizeManualUnread(record.manualUnreadByThreadId),
       threadPermissionModeByThreadId: normalizeThreadPermissionModes(record.threadPermissionModeByThreadId),
       threadFullAccessAcknowledgedByThreadId: normalizeThreadFullAccessAck(record.threadFullAccessAcknowledgedByThreadId),
@@ -214,6 +235,7 @@ function isSameChatStateData(first: ChatStateDocument, second: ChatStateDocument
     JSON.stringify(a.collapsedProjects) === JSON.stringify(b.collapsedProjects) &&
     JSON.stringify(a.projectOrder) === JSON.stringify(b.projectOrder) &&
     JSON.stringify(a.projectDisplayNames) === JSON.stringify(b.projectDisplayNames) &&
+    JSON.stringify(a.projectCwdByProjectName) === JSON.stringify(b.projectCwdByProjectName) &&
     JSON.stringify(a.manualUnreadByThreadId) === JSON.stringify(b.manualUnreadByThreadId) &&
     JSON.stringify(a.threadPermissionModeByThreadId) === JSON.stringify(b.threadPermissionModeByThreadId) &&
     JSON.stringify(a.threadFullAccessAcknowledgedByThreadId) === JSON.stringify(b.threadFullAccessAcknowledgedByThreadId)
@@ -260,6 +282,9 @@ export class ChatStateStore {
     }
     if (patch.projectDisplayNames !== undefined) {
       next.projectDisplayNames = normalizeProjectDisplayNames(patch.projectDisplayNames)
+    }
+    if (patch.projectCwdByProjectName !== undefined) {
+      next.projectCwdByProjectName = normalizeProjectCwdByProjectName(patch.projectCwdByProjectName)
     }
     if (patch.manualUnreadByThreadId !== undefined) {
       next.manualUnreadByThreadId = normalizeManualUnread(patch.manualUnreadByThreadId)

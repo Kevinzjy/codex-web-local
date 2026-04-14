@@ -28,6 +28,7 @@ export type ChatState = {
   collapsedProjects: Record<string, boolean>
   projectOrder: string[]
   projectDisplayNames: Record<string, string>
+  projectCwdByProjectName: Record<string, string>
   manualUnreadByThreadId: Record<string, boolean>
   threadPermissionModeByThreadId: Record<string, ThreadPermissionMode>
   threadFullAccessAcknowledgedByThreadId: Record<string, boolean>
@@ -41,6 +42,7 @@ export type ChatStatePatch = Partial<
     | 'collapsedProjects'
     | 'projectOrder'
     | 'projectDisplayNames'
+    | 'projectCwdByProjectName'
     | 'manualUnreadByThreadId'
     | 'threadPermissionModeByThreadId'
     | 'threadFullAccessAcknowledgedByThreadId'
@@ -102,6 +104,19 @@ function normalizeProjectDisplayNamesFromUnknown(value: unknown): Record<string,
   return record
 }
 
+function normalizeProjectCwdByProjectNameFromUnknown(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record: Record<string, string> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (typeof raw !== 'string') continue
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    record[key] = trimmed
+  }
+  return record
+}
+
 function normalizeManualUnreadFromUnknown(value: unknown): Record<string, boolean> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
   const record: Record<string, boolean> = {}
@@ -151,6 +166,7 @@ function parseChatStatePayload(payload: unknown): ChatState {
       collapsedProjects: {},
       projectOrder: [],
       projectDisplayNames: {},
+      projectCwdByProjectName: {},
       manualUnreadByThreadId: {},
       threadPermissionModeByThreadId: {},
       threadFullAccessAcknowledgedByThreadId: {},
@@ -163,6 +179,7 @@ function parseChatStatePayload(payload: unknown): ChatState {
     collapsedProjects: normalizeCollapsedProjectsFromUnknown(record.collapsedProjects),
     projectOrder: normalizeProjectOrderFromUnknown(record.projectOrder),
     projectDisplayNames: normalizeProjectDisplayNamesFromUnknown(record.projectDisplayNames),
+    projectCwdByProjectName: normalizeProjectCwdByProjectNameFromUnknown(record.projectCwdByProjectName),
     manualUnreadByThreadId: normalizeManualUnreadFromUnknown(record.manualUnreadByThreadId),
     threadPermissionModeByThreadId: normalizeThreadPermissionModesFromUnknown(record.threadPermissionModeByThreadId),
     threadFullAccessAcknowledgedByThreadId: normalizeThreadFullAccessAckFromUnknown(

@@ -111,8 +111,8 @@ Items are grouped by **priority** (rough order to tackle). Higher tiers deliver 
 
 | Tier | Focus |
 |------|--------|
-| **P1 — Next up** | Composer beyond **image-only** attachments (optional); git/quota UX polish only where gaps appear. |
-| **P2 — Soon** | Incremental directory-picker / fs polish if needed (e.g. UX edge cases, docs). |
+| **P1 — Next up** | Composer beyond **image-only** attachments (optional); **composer `/` `@` `!` triggers** (CLI parity); git/quota UX polish only where gaps appear. |
+| **P2 — Soon** | **Git worktree** from current thread; incremental directory-picker / fs polish if needed (e.g. UX edge cases, docs). |
 | **P3 — Later** | Message queueing; voice phase 2 (LLM polish) only. |
 | **P4 — Deferred / high complexity** | Optional HTTPS + system notifications; remote terminal. |
 
@@ -121,15 +121,17 @@ Items are grouped by **priority** (rough order to tackle). Higher tiers deliver 
 ### P1 — Composer and observability (next focus)
 
 - **Composer — beyond images (optional product decision):** Today the composer supports **images** only (`ThreadComposer.vue`: file picker + paste). If needed, extend to non-image files (Codex attachments vs temp server path vs paste-as-text), without breaking existing image behavior.
+- **Composer — CLI-style triggers (not yet in web UI):** The Codex CLI supports **`/`** for built-in commands, **`@`** for file references, and **`!`** for invoking system shell commands. The web composer currently does not surface these. Follow-up: investigate app-server RPC / payload support, then implement input handling (detection, completion UI, safe `!` execution policy) in `ThreadComposer.vue` aligned with CLI behavior.
 - **Git / quota — polish only:** Core git header and sidebar quota meters are shipped (see **Recently shipped**). Follow-ups only if a concrete gap appears (e.g. richer diff stats, copy branch name).
 
-**Rationale:** Directory picker + fs API are shipped; remaining high-value product work here is optional non-image attachments and small polish.
+**Rationale:** Directory picker + fs API are shipped; remaining high-value product work here is optional non-image attachments, composer parity with CLI affordances, and small polish.
 
 ---
 
-### P2 — Directory picker / fs (incremental)
+### P2 — Git worktree + directory picker / fs (incremental)
 
-- Only if users report gaps: e.g. clearer errors, keyboard shortcuts, remember last browsed path across sessions, or documentation tweaks for `CODEX_WEB_PROJECT_ROOTS`.
+- **New worktree from current thread:** Support creating a **Git worktree** (e.g. `git worktree add`) rooted from the active thread’s `cwd` so the user can do isolated development without leaving the conversation. Open design questions: whether this spawns a **new Codex thread**, updates **cwd** for the current thread only for follow-up turns, or only exposes a **host path** for manual use; must align with Codex app-server thread/cwd semantics and safety (password-protected remote UI).
+- Only if users report gaps on the directory picker: e.g. clearer errors, keyboard shortcuts, remember last browsed path across sessions, or documentation tweaks for `CODEX_WEB_PROJECT_ROOTS`.
 - Avoid expanding server fs scope (file reads, writes beyond `mkdir`) unless product explicitly requires it.
 
 ---

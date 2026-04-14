@@ -463,7 +463,7 @@ watch(
 }
 
 .thread-composer-shell {
-  @apply rounded-2xl border border-zinc-300 bg-white p-3 shadow-sm;
+  @apply min-w-0 rounded-2xl border border-zinc-300 bg-white p-3 shadow-sm;
 }
 
 .thread-composer-input {
@@ -523,7 +523,7 @@ watch(
 }
 
 .thread-composer-controls {
-  @apply mt-3 flex items-center gap-4;
+  @apply mt-3 flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-2;
 }
 
 .thread-composer-file-input {
@@ -559,11 +559,11 @@ watch(
 }
 
 .thread-composer-control {
-  @apply shrink-0;
+  @apply max-w-full shrink-0;
 }
 
 .thread-composer-permission {
-  @apply max-w-[11rem] min-w-0;
+  @apply min-w-0 max-w-full sm:max-w-[11rem];
 }
 
 .thread-composer-context-usage {
@@ -579,7 +579,7 @@ watch(
 }
 
 .thread-composer-send-group {
-  @apply ml-auto flex shrink-0 items-center gap-2;
+  @apply ml-auto flex shrink-0 items-center gap-2 max-sm:basis-full max-sm:justify-end;
 }
 
 .thread-composer-submit {

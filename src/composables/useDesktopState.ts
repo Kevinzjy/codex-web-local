@@ -74,6 +74,7 @@ const SCROLL_STATE_STORAGE_KEY = 'codex-web-local.thread-scroll-state.v1'
 const SELECTED_THREAD_STORAGE_KEY = 'codex-web-local.selected-thread-id.v1'
 const PROJECT_ORDER_STORAGE_KEY = 'codex-web-local.project-order.v1'
 const PROJECT_DISPLAY_NAME_STORAGE_KEY = 'codex-web-local.project-display-name.v1'
+const PROJECT_CWD_STORAGE_KEY = 'codex-web-local.project-cwd.v1'
 const THREAD_DISPLAY_NAME_STORAGE_KEY = 'codex-web-local.thread-display-name.v1'
 const MANUAL_UNREAD_STORAGE_KEY = 'codex-web-local.manual-unread.v1'
 const AUTO_REFRESH_ENABLED_STORAGE_KEY = 'codex-web-local.auto-refresh-enabled.v1'
@@ -314,6 +315,7 @@ function saveBooleanRecord(storageKey: string, record: Record<string, boolean>):
 function serializeDesktopChatSlice(
   order: string[],
   display: Record<string, string>,
+  projectCwd: Record<string, string>,
   unread: Record<string, boolean>,
   permissionModes: Record<string, ThreadPermissionMode>,
   fullAccessAck: Record<string, boolean>,
@@ -321,13 +323,14 @@ function serializeDesktopChatSlice(
   return JSON.stringify({
     projectOrder: order,
     projectDisplayNames: display,
+    projectCwdByProjectName: projectCwd,
     manualUnreadByThreadId: unread,
     threadPermissionModeByThreadId: permissionModes,
     threadFullAccessAcknowledgedByThreadId: fullAccessAck,
   })
 }
 
-const EMPTY_DESKTOP_CHAT_SLICE = serializeDesktopChatSlice([], {}, {}, {}, {})
+const EMPTY_DESKTOP_CHAT_SLICE = serializeDesktopChatSlice([], {}, {}, {}, {}, {})
 
 function mergeProjectOrder(previousOrder: string[], incomingGroups: UiProjectGroup[]): string[] {
   const nextOrder = [...previousOrder]
@@ -695,6 +698,7 @@ export function useDesktopState() {
   const scrollStateByThreadId = ref<Record<string, ThreadScrollState>>(loadThreadScrollStateMap())
   const projectOrder = ref<string[]>(loadProjectOrder())
   const projectDisplayNameById = ref<Record<string, string>>(loadProjectDisplayNames())
+  const projectCwdByProjectName = ref<Record<string, string>>(loadStringRecord(PROJECT_CWD_STORAGE_KEY))
   const threadDisplayNameById = ref<Record<string, string>>(loadStringRecord(THREAD_DISPLAY_NAME_STORAGE_KEY))
   const manualUnreadByThreadId = ref<Record<string, boolean>>(loadBooleanRecord(MANUAL_UNREAD_STORAGE_KEY))
   const threadPermissionModeByThreadId = ref<Record<string, ThreadPermissionMode>>({})
@@ -1848,6 +1852,63 @@ export function useDesktopState() {
     }, EVENT_SYNC_DEBOUNCE_MS)
   }
 
+  function syncPersistedProjectCwdsFromSourceGroups(): void {
+    let next = projectCwdByProjectName.value
+    let changed = false
+    for (const group of sourceGroups.value) {
+      let cwd = ''
+      for (const thread of group.threads) {
+        const t = thread.cwd?.trim() ?? ''
+        if (t) {
+          cwd = t
+          break
+        }
+      }
+      if (!cwd) continue
+      if (next[group.projectName] !== cwd) {
+        if (!changed) {
+          next = { ...next }
+          changed = true
+        }
+        next[group.projectName] = cwd
+      }
+    }
+    if (changed) {
+      projectCwdByProjectName.value = next
+      saveStringRecord(PROJECT_CWD_STORAGE_KEY, next)
+    }
+  }
+
+  /** Drop display names + cwd map entries for project keys no longer returned by Codex. */
+  function pruneGhostProjectMetadata(ghostProjectNames: string[]): void {
+    if (ghostProjectNames.length === 0) return
+    const ghost = new Set(ghostProjectNames)
+    let nextDisplay = projectDisplayNameById.value
+    let nextCwd = projectCwdByProjectName.value
+    let displayChanged = false
+    let cwdChanged = false
+    for (const name of ghost) {
+      if (nextDisplay[name] !== undefined) {
+        if (!displayChanged) nextDisplay = { ...nextDisplay }
+        displayChanged = true
+        delete nextDisplay[name]
+      }
+      if (nextCwd[name] !== undefined) {
+        if (!cwdChanged) nextCwd = { ...nextCwd }
+        cwdChanged = true
+        delete nextCwd[name]
+      }
+    }
+    if (displayChanged) {
+      projectDisplayNameById.value = nextDisplay
+      saveProjectDisplayNames(nextDisplay)
+    }
+    if (cwdChanged) {
+      projectCwdByProjectName.value = nextCwd
+      saveStringRecord(PROJECT_CWD_STORAGE_KEY, nextCwd)
+    }
+  }
+
   async function loadThreads() {
     if (!hasLoadedThreads.value) {
       isLoadingThreads.value = true
@@ -1855,8 +1916,13 @@ export function useDesktopState() {
 
     try {
       const groups = await getThreadGroups()
+      const incomingNames = new Set(groups.map((group) => group.projectName))
+      const previousOrder = projectOrder.value
+      const prunedOrder = previousOrder.filter((name) => incomingNames.has(name))
+      const ghostProjectNames = previousOrder.filter((name) => !incomingNames.has(name))
+      pruneGhostProjectMetadata(ghostProjectNames)
 
-      const nextProjectOrder = mergeProjectOrder(projectOrder.value, groups)
+      const nextProjectOrder = mergeProjectOrder(prunedOrder, groups)
       if (!areStringArraysEqual(projectOrder.value, nextProjectOrder)) {
         projectOrder.value = nextProjectOrder
         saveProjectOrder(projectOrder.value)
@@ -1869,6 +1935,7 @@ export function useDesktopState() {
         new Set(flattenThreads(sourceGroups.value).map((thread) => thread.id)),
       )
       applyThreadFlags()
+      syncPersistedProjectCwdsFromSourceGroups()
       hasLoadedThreads.value = true
 
       const flatThreads = flattenThreads(projectGroups.value)
@@ -2220,6 +2287,13 @@ export function useDesktopState() {
       saveProjectDisplayNames(nextDisplayNames)
     }
 
+    if (projectCwdByProjectName.value[projectName] !== undefined) {
+      const nextCwds = { ...projectCwdByProjectName.value }
+      delete nextCwds[projectName]
+      projectCwdByProjectName.value = nextCwds
+      saveStringRecord(PROJECT_CWD_STORAGE_KEY, nextCwds)
+    }
+
     applyThreadFlags()
 
     const flatThreads = flattenThreads(projectGroups.value)
@@ -2469,6 +2543,7 @@ export function useDesktopState() {
     const snapshot = serializeDesktopChatSlice(
       projectOrder.value,
       projectDisplayNameById.value,
+      projectCwdByProjectName.value,
       manualUnreadByThreadId.value,
       threadPermissionModeByThreadId.value,
       threadFullAccessAcknowledgedByThreadId.value,
@@ -2478,6 +2553,7 @@ export function useDesktopState() {
       const saved = await patchChatState({
         projectOrder: [...projectOrder.value],
         projectDisplayNames: { ...projectDisplayNameById.value },
+        projectCwdByProjectName: { ...projectCwdByProjectName.value },
         manualUnreadByThreadId: { ...manualUnreadByThreadId.value },
         threadPermissionModeByThreadId: { ...threadPermissionModeByThreadId.value },
         threadFullAccessAcknowledgedByThreadId: { ...threadFullAccessAcknowledgedByThreadId.value },
@@ -2485,6 +2561,7 @@ export function useDesktopState() {
       lastPushedDesktopChatState = serializeDesktopChatSlice(
         saved.projectOrder,
         saved.projectDisplayNames,
+        saved.projectCwdByProjectName,
         saved.manualUnreadByThreadId,
         saved.threadPermissionModeByThreadId,
         saved.threadFullAccessAcknowledgedByThreadId,
@@ -2502,6 +2579,7 @@ export function useDesktopState() {
       const hasDesktopRemote =
         remote.projectOrder.length > 0 ||
         Object.keys(remote.projectDisplayNames).length > 0 ||
+        Object.keys(remote.projectCwdByProjectName).length > 0 ||
         Object.keys(remote.manualUnreadByThreadId).length > 0 ||
         Object.keys(remote.threadPermissionModeByThreadId).length > 0 ||
         Object.keys(remote.threadFullAccessAcknowledgedByThreadId).length > 0
@@ -2509,16 +2587,19 @@ export function useDesktopState() {
       if (hasDesktopRemote) {
         projectOrder.value = [...remote.projectOrder]
         projectDisplayNameById.value = { ...remote.projectDisplayNames }
+        projectCwdByProjectName.value = { ...remote.projectCwdByProjectName }
         manualUnreadByThreadId.value = { ...remote.manualUnreadByThreadId }
         threadPermissionModeByThreadId.value = { ...remote.threadPermissionModeByThreadId }
         threadFullAccessAcknowledgedByThreadId.value = { ...remote.threadFullAccessAcknowledgedByThreadId }
         saveProjectOrder(projectOrder.value)
         saveProjectDisplayNames(projectDisplayNameById.value)
+        saveStringRecord(PROJECT_CWD_STORAGE_KEY, projectCwdByProjectName.value)
         saveBooleanRecord(MANUAL_UNREAD_STORAGE_KEY, manualUnreadByThreadId.value)
         applyThreadFlags()
         lastPushedDesktopChatState = serializeDesktopChatSlice(
           projectOrder.value,
           projectDisplayNameById.value,
+          projectCwdByProjectName.value,
           manualUnreadByThreadId.value,
           threadPermissionModeByThreadId.value,
           threadFullAccessAcknowledgedByThreadId.value,
@@ -2529,6 +2610,7 @@ export function useDesktopState() {
       const localSnapshot = serializeDesktopChatSlice(
         projectOrder.value,
         projectDisplayNameById.value,
+        projectCwdByProjectName.value,
         manualUnreadByThreadId.value,
         threadPermissionModeByThreadId.value,
         threadFullAccessAcknowledgedByThreadId.value,
@@ -2541,6 +2623,7 @@ export function useDesktopState() {
       const saved = await patchChatState({
         projectOrder: [...projectOrder.value],
         projectDisplayNames: { ...projectDisplayNameById.value },
+        projectCwdByProjectName: { ...projectCwdByProjectName.value },
         manualUnreadByThreadId: { ...manualUnreadByThreadId.value },
         threadPermissionModeByThreadId: { ...threadPermissionModeByThreadId.value },
         threadFullAccessAcknowledgedByThreadId: { ...threadFullAccessAcknowledgedByThreadId.value },
@@ -2548,6 +2631,7 @@ export function useDesktopState() {
       lastPushedDesktopChatState = serializeDesktopChatSlice(
         saved.projectOrder,
         saved.projectDisplayNames,
+        saved.projectCwdByProjectName,
         saved.manualUnreadByThreadId,
         saved.threadPermissionModeByThreadId,
         saved.threadFullAccessAcknowledgedByThreadId,
@@ -2556,6 +2640,7 @@ export function useDesktopState() {
       lastPushedDesktopChatState = serializeDesktopChatSlice(
         projectOrder.value,
         projectDisplayNameById.value,
+        projectCwdByProjectName.value,
         manualUnreadByThreadId.value,
         threadPermissionModeByThreadId.value,
         threadFullAccessAcknowledgedByThreadId.value,
@@ -2569,6 +2654,7 @@ export function useDesktopState() {
     [
       projectOrder,
       projectDisplayNameById,
+      projectCwdByProjectName,
       manualUnreadByThreadId,
       threadPermissionModeByThreadId,
       threadFullAccessAcknowledgedByThreadId,
@@ -2620,9 +2706,22 @@ export function useDesktopState() {
     pendingDraftForFullAccessAck.value = null
   }
 
+  function getProjectFolderCwd(projectName: string): string {
+    const group = projectGroups.value.find((g) => g.projectName === projectName)
+    if (group?.threads?.length) {
+      for (const thread of group.threads) {
+        const cwd = thread.cwd?.trim() ?? ''
+        if (cwd) return cwd
+      }
+    }
+    return projectCwdByProjectName.value[projectName]?.trim() ?? ''
+  }
+
   return {
     projectGroups,
     projectDisplayNameById,
+    projectCwdByProjectName,
+    getProjectFolderCwd,
     selectedThread,
     selectedThreadScrollState,
     selectedThreadServerRequests,
