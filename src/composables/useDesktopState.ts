@@ -705,6 +705,9 @@ export function useDesktopState() {
   const threadDisplayNameById = ref<Record<string, string>>(loadStringRecord(THREAD_DISPLAY_NAME_STORAGE_KEY))
   const manualUnreadByThreadId = ref<Record<string, boolean>>(loadBooleanRecord(MANUAL_UNREAD_STORAGE_KEY))
   const threadPermissionModeByThreadId = ref<Record<string, ThreadPermissionMode>>({})
+  /** Permission for the first message on the home / new-thread route (no thread id yet). */
+  const newThreadPermissionMode = ref<ThreadPermissionMode>('default')
+  const pendingFullAccessNewThreadCwd = ref('')
   const threadFullAccessAcknowledgedByThreadId = ref<Record<string, boolean>>({})
   const fullAccessRiskModalOpen = ref(false)
   const pendingDraftForFullAccessAck = ref<UiComposerDraft | null>(null)
@@ -2162,11 +2165,26 @@ export function useDesktopState() {
     }
   }
 
-  async function sendMessageToNewThread(draft: UiComposerDraft, cwd: string): Promise<string> {
+  async function sendMessageToNewThread(
+    draft: UiComposerDraft,
+    cwd: string,
+    options?: { fullAccessAlreadyAcknowledged?: boolean },
+  ): Promise<string> {
     const nextDraft = normalizeComposerDraft(draft)
     const targetCwd = cwd.trim()
     const selectedModel = selectedModelId.value.trim()
     if (isComposerDraftEmpty(nextDraft)) return ''
+
+    const perm = newThreadPermissionMode.value
+    if (
+      perm === 'full-access' &&
+      !options?.fullAccessAlreadyAcknowledged
+    ) {
+      pendingDraftForFullAccessAck.value = nextDraft
+      pendingFullAccessNewThreadCwd.value = targetCwd
+      fullAccessRiskModalOpen.value = true
+      return ''
+    }
 
     isSendingMessage.value = true
     error.value = ''
@@ -2175,6 +2193,14 @@ export function useDesktopState() {
     try {
       threadId = await startThread(targetCwd || undefined, selectedModel || undefined)
       if (!threadId) return ''
+
+      setThreadPermissionMode(threadId, perm)
+      if (perm === 'full-access') {
+        threadFullAccessAcknowledgedByThreadId.value = {
+          ...threadFullAccessAcknowledgedByThreadId.value,
+          [threadId]: true,
+        }
+      }
 
       markThreadAwaitingSidebar(threadId)
       resumedThreadById.value = {
@@ -2754,11 +2780,21 @@ export function useDesktopState() {
   }
 
   function confirmFullAccessRiskAndSend(): void {
-    const threadId = selectedThreadId.value.trim()
     const draft = pendingDraftForFullAccessAck.value
+    const newThreadCwd = pendingFullAccessNewThreadCwd.value.trim()
+    if (draft && newThreadCwd) {
+      pendingFullAccessNewThreadCwd.value = ''
+      fullAccessRiskModalOpen.value = false
+      pendingDraftForFullAccessAck.value = null
+      void sendMessageToNewThread(draft, newThreadCwd, { fullAccessAlreadyAcknowledged: true })
+      return
+    }
+
+    const threadId = selectedThreadId.value.trim()
     if (!threadId || !draft) {
       fullAccessRiskModalOpen.value = false
       pendingDraftForFullAccessAck.value = null
+      pendingFullAccessNewThreadCwd.value = ''
       return
     }
     threadFullAccessAcknowledgedByThreadId.value = {
@@ -2773,6 +2809,7 @@ export function useDesktopState() {
   function cancelFullAccessRiskModal(): void {
     fullAccessRiskModalOpen.value = false
     pendingDraftForFullAccessAck.value = null
+    pendingFullAccessNewThreadCwd.value = ''
   }
 
   function getProjectFolderCwd(projectName: string): string {
@@ -2866,6 +2903,7 @@ export function useDesktopState() {
     setSelectedModelId,
     setSelectedReasoningEffort,
     selectedThreadPermissionMode,
+    newThreadPermissionMode,
     setThreadPermissionMode,
     fullAccessRiskModalOpen,
     confirmFullAccessRiskAndSend,

@@ -165,9 +165,11 @@
                 :selected-reasoning-effort="selectedReasoningEffort" :is-turn-in-progress="false"
                 :context-usage-percent="null"
                 :is-interrupting-turn="false"
-                :show-permission-mode="false"
+                :permission-mode="composerPermissionMode"
+                :show-permission-mode="true"
                 @submit="onSubmitThreadMessage"
                 @update:selected-model="onSelectModel" @update:selected-reasoning-effort="onSelectReasoningEffort"
+                @update:permission-mode="onPermissionMode"
                 @worktree-created="onWorktreeCreated" />
             </div>
           </template>
@@ -188,7 +190,7 @@
                 :worktree-can-fork="canForkWorktree"
                 :disabled="isSendingMessage || isLoadingMessages" :models="availableModelIds"
                 :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
-                :permission-mode="selectedThreadPermissionMode"
+                :permission-mode="composerPermissionMode"
                 :show-permission-mode="true"
                 :context-usage-percent="selectedContextUsagePercent"
                 :is-turn-in-progress="isSelectedThreadInProgress" :is-interrupting-turn="isInterruptingTurn"
@@ -302,6 +304,7 @@ const {
   setSelectedModelId,
   setSelectedReasoningEffort,
   selectedThreadPermissionMode,
+  newThreadPermissionMode,
   setThreadPermissionMode,
   fullAccessRiskModalOpen,
   confirmFullAccessRiskAndSend,
@@ -358,6 +361,10 @@ const routeThreadAwaitingSidebar = computed(() => {
 })
 
 const isHomeRoute = computed(() => route.name === 'home')
+
+const composerPermissionMode = computed<ThreadPermissionMode>(() =>
+  isHomeRoute.value ? newThreadPermissionMode.value : selectedThreadPermissionMode.value,
+)
 
 const canForkWorktree = computed(() => !isHomeRoute.value && selectedThreadId.value.trim().length > 0)
 const themeName = computed(() => (isDarkMode.value ? 'dark' : 'light'))
@@ -628,6 +635,10 @@ function onSelectReasoningEffort(effort: ReasoningEffort | ''): void {
 }
 
 function onPermissionMode(mode: ThreadPermissionMode): void {
+  if (isHomeRoute.value) {
+    newThreadPermissionMode.value = mode
+    return
+  }
   setThreadPermissionMode(selectedThreadId.value, mode)
 }
 
