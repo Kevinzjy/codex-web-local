@@ -60,6 +60,7 @@
         <SidebarThreadTree
           v-if="!isSidebarCollapsed"
           class="sidebar-thread-tree-host"
+          :theme="themeName"
           :groups="projectGroups"
           :project-display-name-by-id="projectDisplayNameById"
           :selected-thread-id="selectedThreadId" :is-loading="isLoadingThreads"

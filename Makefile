@@ -13,12 +13,19 @@ SYSTEMD_USER_ENABLE ?= 1
 
 .PHONY: test install systemd uninstall
 
+# Matches the filename `npm pack` writes for this package (avoids `npm install -g .` symlinking the repo).
+TARBALL := $(shell node -p "require('./package.json').name + '-' + require('./package.json').version + '.tgz'")
+
 test: node_modules/.bin/vite
 	http_proxy=$(HTTP_PROXY_URL) https_proxy=$(HTTPS_PROXY_URL) all_proxy=$(ALL_PROXY_URL) npm run dev -- --host $(HOST) --port $(PORT)
 
 install: node_modules/.bin/vite
 	npm run build
-	npm install -g .
+	rm -f $(TARBALL)
+	npm pack
+	test -f $(TARBALL)
+	npm install -g ./$(TARBALL)
+	rm -f $(TARBALL)
 
 # Linux only: user systemd unit for the globally installed CLI (run after `make install`).
 systemd:

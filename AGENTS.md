@@ -4,13 +4,15 @@
 
 `codex-web-local` is a Vue/Vite web UI for Codex that talks to `codex app-server` through a local server bridge. It is intended to support remote browser access, including access through `0.0.0.0`, LAN hostnames, and Tailscale DNS names.
 
+**Upstream / repo:** Active development is on [github.com/Kevinzjy/codex-web-local](https://github.com/Kevinzjy/codex-web-local). Install from a **git checkout** with `make install` (see README); this fork is not oriented around publishing to the npm registry.
+
 ## Common Commands
 
 - Local development: `make test`
 - Local development with overrides: `make test PORT=3001 HOST=0.0.0.0`
-- Install global package: `make install`
-- systemd user unit + `~/.config/codex-web-local/service.env` template (Linux, after install): `make systemd`
-- Uninstall global package + systemd unit: `make uninstall`
+- Install global CLI from the working tree: `make install` (runs `npm run build` and `npm install -g .`)
+- Linux — user systemd unit + first-run `service.env` template: `make systemd` (after `make install`). Set `SYSTEMD_USER_ENABLE=0` to install the unit file without `enable --now`.
+- Linux — remove user unit, reload systemd, then global CLI: `make uninstall`
 - Build check: `npm run build`
 - Whitespace check before commit: `git diff --check`
 
@@ -26,6 +28,17 @@ The installed CLI also accepts proxy flags that are passed to `codex app-server`
 - `--https-proxy`
 - `--all-proxy`
 
+### CLI environment (headless / systemd)
+
+- **`CODEX_WEB_LOCAL_PASSWORD`** — If neither `--password` nor `--no-password` is set, a non-empty value is used as the web UI password. Startup logs show `(from CODEX_WEB_LOCAL_PASSWORD)` instead of the secret. **`--password` on the CLI wins** over the variable.
+- Under **systemd**, the user unit loads **`~/.config/codex-web-local/service.env`** (`EnvironmentFile` in `systemd/codex-web-local.service.in`). **`make systemd`** creates that file on first run by copying `systemd/service.env.example` (commented template for password + `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`); an existing `service.env` is never overwritten. After editing, `systemctl --user restart codex-web-local.service`.
+- **`make uninstall`** removes the systemd unit and runs `npm uninstall -g`; it does **not** delete `service.env` (may contain secrets / local tuning).
+
+### systemd assets in the repo
+
+- `systemd/codex-web-local.service.in` — `ExecStart` placeholder `@@CODEX_WEB_LOCAL_BIN@@` replaced by `make systemd`.
+- `systemd/service.env.example` — shipped as the template for `service.env`; listed in `package.json` `files` for pack layout consistency.
+
 ## Code Map
 
 - `src/App.vue`: top-level layout wiring, route sync, New chat page, sidebar events, composer events.
@@ -33,12 +46,15 @@ The installed CLI also accepts proxy flags that are passed to `codex app-server`
 - `src/api/codexGateway.ts`: frontend RPC calls into the local `/codex-api` bridge.
 - `src/api/normalizers/v2.ts`: conversion from Codex app-server payloads to UI models.
 - `src/components/content/ThreadConversation.vue`: message rendering, file reference rendering, scroll state persistence/restoration, server request cards.
-- `src/components/content/ThreadComposer.vue`: message input, image paste attachments, IME-safe Enter behavior, multiline composer behavior.
+- `src/components/content/ThreadComposer.vue`: message input, image paste attachments, browser voice dictation (Web Speech API) when supported, IME-safe Enter behavior, multiline composer behavior.
+- `src/composables/useWebSpeechRecognition.ts`: Web Speech recognition lifecycle for the composer mic.
+- `src/utils/platform.ts`: lightweight platform helpers (e.g. iOS detection for voice copy).
 - `src/components/content/ComposerDropdown.vue`: shared dropdown used by Model/Thinking and New chat project selection.
 - `src/components/sidebar/SidebarThreadTree.vue`: project/thread tree, project context menu, thread context menu, pin/unread/archive/rename actions.
 - `src/server/codexAppServerBridge.ts`: Node middleware that starts and proxies `codex app-server`.
 - `src/server/httpServer.ts`: production Express server, auth, static frontend, and bridge middleware.
-- `src/cli/index.ts`: `codex-web-local` CLI entrypoint.
+- `src/cli/index.ts`: `codex-web-local` CLI entrypoint (default port **3000**, `CODEX_WEB_LOCAL_PASSWORD`, proxy flags).
+- `systemd/`: user unit template and `service.env.example` for Linux installs via `make systemd`.
 - `vite.config.ts`: dev server configuration and Codex bridge middleware for Vite.
 
 ## Development Notes
@@ -77,6 +93,8 @@ These are already in the tree; the follow-up plan only lists **remaining** work.
 - **Sidebar layout / scrolling:** Pin section and **Threads** label stay fixed; only the project/thread list scrolls; shared `.codex-subtle-scroll` styling (conversation list uses the same pattern).
 - **Composer attachments (images):** `+` button and paste attach images (PNG/JPEG/WebP/GIF) with size/count limits; not the same as attaching arbitrary non-image files or a server-side upload pipeline.
 - **Voice input (phase 1):** Composer microphone uses the browser **Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`) for dictation into the draft. No server-side audio; optional LLM “polish” is a separate future step.
+- **Mobile / notched layouts:** Viewport meta (`viewport-fit`, `interactive-widget`), `dvh` + safe-area padding on the desktop shell and content (`index.html`, `DesktopLayout.vue`, `App.vue`, `style.css`).
+- **Linux systemd (user):** `make systemd` installs `~/.config/systemd/user/codex-web-local.service`, seeds `~/.config/codex-web-local/service.env` once from the commented template, and enables the service. CLI reads **`CODEX_WEB_LOCAL_PASSWORD`** and proxy env from `service.env` when run under systemd.
 
 ## Follow-Up Development Plan
 
@@ -88,7 +106,7 @@ Items are grouped by **priority** (rough order to tackle). Higher tiers deliver 
 |------|--------|
 | **P1 — Next up** | New-chat project picker + read-only `fs` API (foundation for remote “choose folder”). |
 | **P2 — Soon** | Extend composer beyond **image-only** attachments (if desired); small git/quota UX polish only where gaps appear. |
-| **P3 — Later** | Message queueing; voice input. |
+| **P3 — Later** | Message queueing; voice phase 2 (LLM polish) only. |
 | **P4 — Deferred / high complexity** | Optional HTTPS + system notifications; remote terminal. |
 
 ---

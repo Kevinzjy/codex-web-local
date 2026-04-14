@@ -46,7 +46,7 @@
       <span class="thread-tree-header">Threads</span>
     </SidebarMenuRow>
 
-    <div class="thread-tree-scroll codex-subtle-scroll">
+    <div ref="threadTreeScrollRef" class="thread-tree-scroll codex-subtle-scroll">
       <p v-if="isSearchActive && filteredGroups.length === 0" class="thread-tree-no-results">No matching threads</p>
 
       <p v-else-if="isLoading && groups.length === 0" class="thread-tree-loading">Loading threads...</p>
@@ -102,30 +102,6 @@
                   >
                     <IconTablerDots class="thread-icon" />
                   </button>
-
-                  <div v-if="isProjectMenuOpen(group.projectName)" class="project-menu-panel" @click.stop>
-                    <template v-if="projectMenuMode === 'actions'">
-                      <button class="project-menu-item" type="button" @click="openRenameProjectMenu(group.projectName)">
-                        Edit name
-                      </button>
-                      <button
-                        class="project-menu-item project-menu-item-danger"
-                        type="button"
-                        @click="onRemoveProject(group.projectName)"
-                      >
-                        Remove
-                      </button>
-                    </template>
-                    <template v-else>
-                      <label class="project-menu-label">Project name</label>
-                      <input
-                        v-model="projectRenameDraft"
-                        class="project-menu-input"
-                        type="text"
-                        @input="onProjectNameInput(group.projectName)"
-                      />
-                    </template>
-                  </div>
                 </div>
 
                 <button
@@ -141,7 +117,7 @@
             </template>
           </SidebarMenuRow>
 
-          <ul v-if="hasThreads(group)" class="thread-list">
+          <ul v-if="visibleThreads(group).length > 0" class="thread-list">
             <li v-for="thread in visibleThreads(group)" :key="thread.id" class="thread-row-item">
               <SidebarMenuRow
                 class="thread-row"
@@ -185,7 +161,11 @@
             </li>
           </ul>
 
-          <SidebarMenuRow v-else as="p" class="project-empty-row">
+          <SidebarMenuRow
+            v-else-if="!isCollapsed(group.projectName) && !hasThreads(group)"
+            as="p"
+            class="project-empty-row"
+          >
             <template #left>
               <span class="project-empty-spacer" />
             </template>
@@ -242,6 +222,39 @@
         </div>
       </form>
     </div>
+
+    <Teleport to="body">
+      <div v-if="openProjectMenuId" :data-theme="props.theme" class="project-menu-teleport-root">
+        <div
+          ref="projectMenuPanelRef"
+          class="project-menu-panel"
+          :style="projectMenuFixedStyle"
+          @click.stop
+        >
+          <template v-if="projectMenuMode === 'actions'">
+            <button class="project-menu-item" type="button" @click="openRenameProjectMenu(openProjectMenuId)">
+              Edit name
+            </button>
+            <button
+              class="project-menu-item project-menu-item-danger"
+              type="button"
+              @click="onRemoveProject(openProjectMenuId)"
+            >
+              Remove
+            </button>
+          </template>
+          <template v-else>
+            <label class="project-menu-label">Project name</label>
+            <input
+              v-model="projectRenameDraft"
+              class="project-menu-input"
+              type="text"
+              @input="onProjectNameInput(openProjectMenuId)"
+            />
+          </template>
+        </div>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -260,13 +273,20 @@ import IconTablerFolderOpen from '../icons/IconTablerFolderOpen.vue'
 import IconTablerPin from '../icons/IconTablerPin.vue'
 import SidebarMenuRow from './SidebarMenuRow.vue'
 
-const props = defineProps<{
-  groups: UiProjectGroup[]
-  projectDisplayNameById: Record<string, string>
-  selectedThreadId: string
-  isLoading: boolean
-  searchQuery: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    groups: UiProjectGroup[]
+    projectDisplayNameById: Record<string, string>
+    selectedThreadId: string
+    isLoading: boolean
+    searchQuery: string
+    /** Mirrors app shell theme so teleported menus match `style.css` [data-theme] rules. */
+    theme?: 'dark' | 'light'
+  }>(),
+  {
+    theme: 'light',
+  },
+)
 
 const emit = defineEmits<{
   select: [threadId: string]
@@ -321,6 +341,7 @@ const PROJECT_GROUP_EXPANDED_GAP_PX = 6
 const PINNED_THREADS_STORAGE_KEY = 'codex-web-local.pinned-threads.v1'
 const THREAD_MENU_WIDTH_PX = 220
 const THREAD_MENU_MAX_HEIGHT_PX = 240
+const PROJECT_MENU_ANCHOR_GAP_PX = 4
 const expandedProjects = ref<Record<string, boolean>>({})
 const collapsedProjects = ref<Record<string, boolean>>({})
 const pinnedThreadIds = ref<string[]>([])
@@ -330,13 +351,21 @@ const openThreadMenu = ref<ThreadMenuState | null>(null)
 const projectMenuMode = ref<'actions' | 'rename'>('actions')
 const projectRenameDraft = ref('')
 const threadRenameDraft = ref('')
+const projectMenuPanelPosition = ref({ top: 0, left: 0 })
+const projectMenuFixedStyle = computed(() => ({
+  top: `${projectMenuPanelPosition.value.top}px`,
+  left: `${projectMenuPanelPosition.value.left}px`,
+}))
 const groupsContainerRef = ref<HTMLElement | null>(null)
+const threadTreeScrollRef = ref<HTMLElement | null>(null)
+const projectMenuPanelRef = ref<HTMLElement | null>(null)
 const threadMenuPanelRef = ref<HTMLElement | null>(null)
 const threadRenameInputRef = ref<HTMLInputElement | null>(null)
 const pendingProjectDrag = ref<PendingProjectDrag | null>(null)
 const activeProjectDrag = ref<ActiveProjectDrag | null>(null)
 let pendingDragPointerSample: DragPointerSample | null = null
 let dragPointerRafId: number | null = null
+let projectMenuScrollParent: HTMLElement | null = null
 const suppressNextProjectToggleId = ref('')
 const measuredHeightByProject = ref<Record<string, number>>({})
 const projectGroupElementByName = new Map<string, HTMLElement>()
@@ -873,18 +902,35 @@ function setProjectMenuWrapRef(projectName: string, element: Element | Component
   projectMenuWrapElementByName.delete(projectName)
 }
 
+function updateProjectMenuPanelPosition(): void {
+  const id = openProjectMenuId.value
+  if (!id || typeof window === 'undefined') return
+
+  const wrap = projectMenuWrapElementByName.get(id)
+  if (!wrap) return
+
+  const rect = wrap.getBoundingClientRect()
+  projectMenuPanelPosition.value = {
+    top: rect.bottom + PROJECT_MENU_ANCHOR_GAP_PX,
+    left: rect.right,
+  }
+}
+
 function isEventInsideOpenProjectMenu(event: Event): boolean {
   const projectName = openProjectMenuId.value
   if (!projectName) return false
 
   const openMenuWrapElement = projectMenuWrapElementByName.get(projectName)
-  if (!openMenuWrapElement) return false
+  const panel = projectMenuPanelRef.value
 
   const eventPath = typeof event.composedPath === 'function' ? event.composedPath() : []
-  if (eventPath.includes(openMenuWrapElement)) return true
+  if (openMenuWrapElement && eventPath.includes(openMenuWrapElement)) return true
+  if (panel && eventPath.includes(panel)) return true
 
   const target = event.target
-  return target instanceof Node ? openMenuWrapElement.contains(target) : false
+  if (openMenuWrapElement && target instanceof Node && openMenuWrapElement.contains(target)) return true
+  if (panel && target instanceof Node && panel.contains(target)) return true
+  return false
 }
 
 function isEventInsideOpenThreadMenu(event: Event): boolean {
@@ -957,12 +1003,18 @@ function bindProjectMenuDismissListeners(): void {
   window.addEventListener('pointerdown', onProjectMenuPointerDown, { capture: true })
   window.addEventListener('focusin', onProjectMenuFocusIn, { capture: true })
   window.addEventListener('blur', onWindowBlurForProjectMenu)
+  window.addEventListener('resize', updateProjectMenuPanelPosition)
+  projectMenuScrollParent = threadTreeScrollRef.value
+  projectMenuScrollParent?.addEventListener('scroll', updateProjectMenuPanelPosition, { passive: true })
 }
 
 function unbindProjectMenuDismissListeners(): void {
   window.removeEventListener('pointerdown', onProjectMenuPointerDown, { capture: true })
   window.removeEventListener('focusin', onProjectMenuFocusIn, { capture: true })
   window.removeEventListener('blur', onWindowBlurForProjectMenu)
+  window.removeEventListener('resize', updateProjectMenuPanelPosition)
+  projectMenuScrollParent?.removeEventListener('scroll', updateProjectMenuPanelPosition)
+  projectMenuScrollParent = null
 }
 
 function updateMeasuredProjectHeight(projectName: string, element: HTMLElement): void {
@@ -1289,13 +1341,31 @@ watch(
   { immediate: true },
 )
 
-watch(openProjectMenuId, (projectName) => {
+watch(openProjectMenuId, (projectName, previous) => {
   if (projectName) {
-    bindProjectMenuDismissListeners()
+    if (!previous) {
+      bindProjectMenuDismissListeners()
+    }
+    nextTick(() => {
+      updateProjectMenuPanelPosition()
+      requestAnimationFrame(() => {
+        updateProjectMenuPanelPosition()
+      })
+    })
     return
   }
 
   unbindProjectMenuDismissListeners()
+})
+
+watch(projectMenuMode, () => {
+  if (!openProjectMenuId.value) return
+  nextTick(() => {
+    updateProjectMenuPanelPosition()
+    requestAnimationFrame(() => {
+      updateProjectMenuPanelPosition()
+    })
+  })
 })
 
 watch(
@@ -1401,6 +1471,14 @@ onBeforeUnmount(() => {
   @apply relative;
 }
 
+.project-menu-teleport-root {
+  @apply pointer-events-none;
+}
+
+.project-menu-teleport-root .project-menu-panel {
+  @apply pointer-events-auto;
+}
+
 .project-hover-controls {
   @apply flex items-center gap-1;
 }
@@ -1410,7 +1488,7 @@ onBeforeUnmount(() => {
 }
 
 .project-menu-panel {
-  @apply absolute right-0 top-full mt-1 z-20 min-w-36 rounded-md border border-zinc-200 bg-white p-1 shadow-md flex flex-col gap-0.5;
+  @apply fixed z-[100] min-w-36 -translate-x-full rounded-md border border-zinc-200 bg-white p-1 shadow-md flex flex-col gap-0.5;
 }
 
 .project-menu-item {
