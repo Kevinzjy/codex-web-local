@@ -18,6 +18,7 @@
       <div class="thread-composer-message-row">
         <textarea
           id="thread-composer-message"
+          ref="messageInputRef"
           v-model="draft"
           class="thread-composer-input"
           name="message"
@@ -188,7 +189,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { ReasoningEffort, ThreadPermissionMode, UiComposerDraft, UiComposerImage } from '../../types/codex'
 import { useWebSpeechRecognition } from '../../composables/useWebSpeechRecognition'
 import { isLikelyIOS } from '../../utils/platform'
@@ -233,6 +234,10 @@ const draft = ref('')
 const images = ref<UiComposerImage[]>([])
 const imageError = ref('')
 const imageInputRef = ref<HTMLInputElement | null>(null)
+const messageInputRef = ref<HTMLTextAreaElement | null>(null)
+
+/** Matches Tailwind max-h-40 (10rem) — keep in sync with .thread-composer-input */
+const COMPOSER_TEXTAREA_MAX_HEIGHT_PX = 160
 const isComposingText = ref(false)
 const justEndedComposition = ref(false)
 const reasoningOptions: Array<{ value: ReasoningEffort; label: string }> = [
@@ -463,9 +468,18 @@ function onCompositionStart(): void {
   justEndedComposition.value = false
 }
 
+function adjustComposerTextareaHeight(): void {
+  const el = messageInputRef.value
+  if (!el) return
+  el.style.height = 'auto'
+  const next = Math.min(el.scrollHeight, COMPOSER_TEXTAREA_MAX_HEIGHT_PX)
+  el.style.height = `${next}px`
+}
+
 function onCompositionEnd(): void {
   isComposingText.value = false
   justEndedComposition.value = true
+  void nextTick(() => adjustComposerTextareaHeight())
   window.setTimeout(() => {
     justEndedComposition.value = false
   }, 0)
@@ -498,6 +512,7 @@ function onSubmit(): void {
   draft.value = ''
   images.value = []
   imageError.value = ''
+  void nextTick(() => adjustComposerTextareaHeight())
 }
 
 function onInterrupt(): void {
@@ -526,8 +541,21 @@ watch(
     draft.value = ''
     images.value = []
     imageError.value = ''
+    void nextTick(() => adjustComposerTextareaHeight())
   },
 )
+
+watch(
+  draft,
+  () => {
+    void nextTick(() => adjustComposerTextareaHeight())
+  },
+  { flush: 'post' },
+)
+
+onMounted(() => {
+  void nextTick(() => adjustComposerTextareaHeight())
+})
 </script>
 
 <style scoped>
@@ -562,7 +590,7 @@ watch(
 }
 
 .thread-composer-input {
-  @apply box-border min-h-11 w-full min-w-0 max-h-40 resize-none rounded-xl border-0 bg-transparent px-1 py-3 text-sm leading-5 text-zinc-900 outline-none transition overflow-y-auto break-words [overflow-wrap:anywhere];
+  @apply box-border min-h-11 w-full min-w-0 max-h-40 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-1 py-3 text-sm leading-5 text-zinc-900 outline-none transition-colors break-words [overflow-wrap:anywhere];
 }
 
 .thread-composer-input:focus {
