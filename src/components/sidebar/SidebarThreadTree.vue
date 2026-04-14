@@ -69,6 +69,7 @@
             role="button"
             tabindex="0"
             @click="toggleProjectCollapse(group.projectName)"
+            @contextmenu.prevent="onProjectContextMenu($event, group.projectName)"
             @keydown.enter.prevent="toggleProjectCollapse(group.projectName)"
             @keydown.space.prevent="toggleProjectCollapse(group.projectName)"
           >
@@ -230,6 +231,7 @@
         <div
           ref="projectMenuPanelRef"
           class="project-menu-panel"
+          :class="{ 'project-menu-panel--anchor': !projectMenuUseCursor }"
           :style="projectMenuFixedStyle"
           @click.stop
         >
@@ -242,7 +244,7 @@
               type="button"
               @click="onRemoveProject(openProjectMenuId)"
             >
-              Remove
+              Remove project dir
             </button>
           </template>
           <template v-else>
@@ -346,7 +348,11 @@ const PROJECT_GROUP_EXPANDED_GAP_PX = 6
 const PINNED_THREADS_STORAGE_KEY = 'codex-web-local.pinned-threads.v1'
 const THREAD_MENU_WIDTH_PX = 220
 const THREAD_MENU_MAX_HEIGHT_PX = 240
+const PROJECT_MENU_WIDTH_PX = 220
+const PROJECT_MENU_MAX_HEIGHT_PX = 280
 const PROJECT_MENU_ANCHOR_GAP_PX = 4
+/** Offset so the menu opens down-right of the cursor (not hidden under the pointer / left of it). */
+const PROJECT_MENU_CURSOR_GAP_PX = 4
 const expandedProjects = ref<Record<string, boolean>>({})
 const collapsedProjects = ref<Record<string, boolean>>({})
 const pinnedThreadIds = ref<string[]>([])
@@ -357,10 +363,21 @@ const projectMenuMode = ref<'actions' | 'rename'>('actions')
 const projectRenameDraft = ref('')
 const threadRenameDraft = ref('')
 const projectMenuPanelPosition = ref({ top: 0, left: 0 })
-const projectMenuFixedStyle = computed(() => ({
-  top: `${projectMenuPanelPosition.value.top}px`,
-  left: `${projectMenuPanelPosition.value.left}px`,
-}))
+const projectMenuUseCursor = ref(false)
+const projectMenuCursorPos = ref({ top: 0, left: 0 })
+const projectMenuOpenClientPos = ref<{ x: number; y: number } | null>(null)
+const projectMenuFixedStyle = computed(() => {
+  if (projectMenuUseCursor.value) {
+    return {
+      top: `${projectMenuCursorPos.value.top}px`,
+      left: `${projectMenuCursorPos.value.left}px`,
+    }
+  }
+  return {
+    top: `${projectMenuPanelPosition.value.top}px`,
+    left: `${projectMenuPanelPosition.value.left}px`,
+  }
+})
 const groupsContainerRef = ref<HTMLElement | null>(null)
 const threadTreeScrollRef = ref<HTMLElement | null>(null)
 const projectMenuPanelRef = ref<HTMLElement | null>(null)
@@ -703,6 +720,17 @@ function clampThreadMenuPosition(clientX: number, clientY: number): { x: number;
   }
 }
 
+function clampProjectMenuPosition(clientX: number, clientY: number): { x: number; y: number } {
+  if (typeof window === 'undefined') {
+    return { x: clientX, y: clientY }
+  }
+
+  return {
+    x: Math.max(8, Math.min(clientX, window.innerWidth - PROJECT_MENU_WIDTH_PX - 8)),
+    y: Math.max(8, Math.min(clientY, window.innerHeight - PROJECT_MENU_MAX_HEIGHT_PX - 8)),
+  }
+}
+
 function isThreadMenuOpen(threadId: string): boolean {
   return openThreadMenu.value?.threadId === threadId
 }
@@ -822,6 +850,8 @@ function closeProjectMenu(): void {
   openProjectMenuId.value = ''
   projectMenuMode.value = 'actions'
   projectRenameDraft.value = ''
+  projectMenuUseCursor.value = false
+  projectMenuOpenClientPos.value = null
 }
 
 function toggleProjectMenu(projectName: string): void {
@@ -829,6 +859,30 @@ function toggleProjectMenu(projectName: string): void {
     closeProjectMenu()
     return
   }
+
+  projectMenuUseCursor.value = false
+  projectMenuOpenClientPos.value = null
+  closeThreadMenu()
+  openProjectMenuId.value = projectName
+  projectMenuMode.value = 'actions'
+  projectRenameDraft.value = getProjectDisplayName(projectName)
+}
+
+function onProjectContextMenu(event: MouseEvent, projectName: string): void {
+  event.preventDefault()
+  event.stopPropagation()
+
+  if (openProjectMenuId.value === projectName) {
+    closeProjectMenu()
+    return
+  }
+
+  const anchorX = event.clientX + PROJECT_MENU_CURSOR_GAP_PX
+  const anchorY = event.clientY + PROJECT_MENU_CURSOR_GAP_PX
+  const position = clampProjectMenuPosition(anchorX, anchorY)
+  projectMenuOpenClientPos.value = { x: anchorX, y: anchorY }
+  projectMenuCursorPos.value = { top: position.y, left: position.x }
+  projectMenuUseCursor.value = true
 
   closeThreadMenu()
   openProjectMenuId.value = projectName
@@ -838,6 +892,9 @@ function toggleProjectMenu(projectName: string): void {
 
 function openRenameProjectMenu(projectName: string): void {
   closeThreadMenu()
+  if (!projectMenuUseCursor.value) {
+    projectMenuOpenClientPos.value = null
+  }
   openProjectMenuId.value = projectName
   projectMenuMode.value = 'rename'
   projectRenameDraft.value = getProjectDisplayName(projectName)
@@ -919,6 +976,18 @@ function updateProjectMenuPanelPosition(): void {
     top: rect.bottom + PROJECT_MENU_ANCHOR_GAP_PX,
     left: rect.right,
   }
+}
+
+function updateProjectMenuLayout(): void {
+  if (projectMenuUseCursor.value && projectMenuOpenClientPos.value) {
+    const position = clampProjectMenuPosition(
+      projectMenuOpenClientPos.value.x,
+      projectMenuOpenClientPos.value.y,
+    )
+    projectMenuCursorPos.value = { top: position.y, left: position.x }
+    return
+  }
+  updateProjectMenuPanelPosition()
 }
 
 function isEventInsideOpenProjectMenu(event: Event): boolean {
@@ -1008,17 +1077,17 @@ function bindProjectMenuDismissListeners(): void {
   window.addEventListener('pointerdown', onProjectMenuPointerDown, { capture: true })
   window.addEventListener('focusin', onProjectMenuFocusIn, { capture: true })
   window.addEventListener('blur', onWindowBlurForProjectMenu)
-  window.addEventListener('resize', updateProjectMenuPanelPosition)
+  window.addEventListener('resize', updateProjectMenuLayout)
   projectMenuScrollParent = threadTreeScrollRef.value
-  projectMenuScrollParent?.addEventListener('scroll', updateProjectMenuPanelPosition, { passive: true })
+  projectMenuScrollParent?.addEventListener('scroll', updateProjectMenuLayout, { passive: true })
 }
 
 function unbindProjectMenuDismissListeners(): void {
   window.removeEventListener('pointerdown', onProjectMenuPointerDown, { capture: true })
   window.removeEventListener('focusin', onProjectMenuFocusIn, { capture: true })
   window.removeEventListener('blur', onWindowBlurForProjectMenu)
-  window.removeEventListener('resize', updateProjectMenuPanelPosition)
-  projectMenuScrollParent?.removeEventListener('scroll', updateProjectMenuPanelPosition)
+  window.removeEventListener('resize', updateProjectMenuLayout)
+  projectMenuScrollParent?.removeEventListener('scroll', updateProjectMenuLayout)
   projectMenuScrollParent = null
 }
 
@@ -1352,9 +1421,9 @@ watch(openProjectMenuId, (projectName, previous) => {
       bindProjectMenuDismissListeners()
     }
     nextTick(() => {
-      updateProjectMenuPanelPosition()
+      updateProjectMenuLayout()
       requestAnimationFrame(() => {
-        updateProjectMenuPanelPosition()
+        updateProjectMenuLayout()
       })
     })
     return
@@ -1366,9 +1435,9 @@ watch(openProjectMenuId, (projectName, previous) => {
 watch(projectMenuMode, () => {
   if (!openProjectMenuId.value) return
   nextTick(() => {
-    updateProjectMenuPanelPosition()
+    updateProjectMenuLayout()
     requestAnimationFrame(() => {
-      updateProjectMenuPanelPosition()
+      updateProjectMenuLayout()
     })
   })
 })
@@ -1493,7 +1562,12 @@ onBeforeUnmount(() => {
 }
 
 .project-menu-panel {
-  @apply fixed z-[100] min-w-36 -translate-x-full rounded-md border border-zinc-200 bg-white p-1 shadow-md flex flex-col gap-0.5;
+  @apply fixed z-[100] min-w-36 rounded-md border border-zinc-200 bg-white p-1 shadow-md flex flex-col gap-0.5;
+}
+
+/* Three-dot trigger: panel aligns its right edge to the anchor (opens leftward). */
+.project-menu-panel--anchor {
+  @apply -translate-x-full;
 }
 
 .project-menu-item {

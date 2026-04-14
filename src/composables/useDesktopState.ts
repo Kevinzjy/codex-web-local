@@ -2320,7 +2320,7 @@ export function useDesktopState() {
     markThreadAsRead(normalizedThreadId)
   }
 
-  function removeProject(projectName: string): void {
+  function removeProjectFromLocalState(projectName: string): void {
     if (projectName.length === 0) return
 
     const nextProjectOrder = projectOrder.value.filter((name) => name !== projectName)
@@ -2353,6 +2353,24 @@ export function useDesktopState() {
     const currentExists = flatThreads.some((thread) => thread.id === selectedThreadId.value)
     if (!currentExists) {
       setSelectedThreadId(flatThreads[0]?.id ?? '')
+    }
+  }
+
+  async function removeProject(projectName: string): Promise<void> {
+    if (projectName.length === 0) return
+
+    const group = sourceGroups.value.find((g) => g.projectName === projectName)
+    const threadIds = group?.threads.map((thread) => thread.id) ?? []
+
+    error.value = ''
+    try {
+      if (threadIds.length > 0) {
+        await Promise.all(threadIds.map((id) => archiveThread(id)))
+      }
+      await loadThreads()
+      removeProjectFromLocalState(projectName)
+    } catch (unknownError) {
+      error.value = unknownError instanceof Error ? unknownError.message : 'Failed to remove project'
     }
   }
 

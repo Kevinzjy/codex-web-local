@@ -123,16 +123,24 @@
                   <p class="worked-separator-text">{{ message.text }}</p>
                   <span class="worked-separator-line" aria-hidden="true" />
                 </div>
-                <p v-else class="message-text">
-                  <template v-for="(segment, index) in parseInlineSegments(message.text)" :key="`seg-${index}`">
-                    <span v-if="segment.kind === 'text'">{{ segment.value }}</span>
-                    <a v-else-if="segment.kind === 'file'" class="message-file-link" href="#" @click.prevent>
-                      {{ segment.displayName }}
-                    </a>
-                    <strong v-else-if="segment.kind === 'bold'" class="message-bold">{{ segment.value }}</strong>
-                    <code v-else class="message-inline-code">{{ segment.value }}</code>
+                <template v-else>
+                  <template v-for="(block, bIdx) in parseMessageBlocks(message.text)" :key="`blk-${message.id}-${bIdx}`">
+                    <pre
+                      v-if="block.kind === 'code'"
+                      class="message-code-block"
+                    ><code class="message-code-block-inner">{{ block.code }}</code></pre>
+                    <p v-else-if="block.kind === 'markdown' && block.text.length > 0" class="message-text">
+                      <template v-for="(segment, index) in parseInlineSegments(block.text)" :key="`seg-${bIdx}-${index}`">
+                        <span v-if="segment.kind === 'text'">{{ segment.value }}</span>
+                        <a v-else-if="segment.kind === 'file'" class="message-file-link" href="#" @click.prevent>
+                          {{ segment.displayName }}
+                        </a>
+                        <strong v-else-if="segment.kind === 'bold'" class="message-bold">{{ segment.value }}</strong>
+                        <code v-else class="message-inline-code">{{ segment.value }}</code>
+                      </template>
+                    </p>
                   </template>
-                </p>
+                </template>
               </article>
             </article>
           </div>
@@ -207,6 +215,10 @@ type InlineSegment =
   | { kind: 'bold'; value: string }
   | { kind: 'code'; value: string }
   | { kind: 'file'; value: string; displayName: string }
+
+type MessageBlock =
+  | { kind: 'markdown'; text: string }
+  | { kind: 'code'; language: string; code: string }
 
 let scrollRestoreFrame = 0
 let scrollRestoreGuardFrame = 0
@@ -341,6 +353,70 @@ function parseBoldAt(text: string, start: number): { segment: InlineSegment; end
     segment: { kind: 'bold', value },
     end: closingStart + 2,
   }
+}
+
+/**
+ * Split markdown-style fenced code blocks (``` ... ```) from the rest of the message.
+ * Multiline blocks are not handled by parseInlineSegments alone because inline backtick pairs
+ * require no newline inside the token.
+ */
+function parseMessageBlocks(text: string): MessageBlock[] {
+  if (!text.includes('```')) {
+    return [{ kind: 'markdown', text }]
+  }
+
+  const blocks: MessageBlock[] = []
+  const lines = text.split('\n')
+  const paragraphLines: string[] = []
+  let inFence = false
+  let fenceLang = ''
+  const codeLines: string[] = []
+
+  const flushParagraph = (): void => {
+    if (paragraphLines.length === 0) return
+    const joined = paragraphLines.join('\n')
+    if (joined.length > 0) {
+      blocks.push({ kind: 'markdown', text: joined })
+    }
+    paragraphLines.length = 0
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (inFence) {
+      if (trimmed === '```') {
+        blocks.push({ kind: 'code', language: fenceLang, code: codeLines.join('\n') })
+        inFence = false
+        fenceLang = ''
+        codeLines.length = 0
+      } else {
+        codeLines.push(line)
+      }
+      continue
+    }
+
+    if (trimmed.startsWith('```')) {
+      const rest = trimmed.slice(3).trim()
+      const lang = rest.length === 0 ? '' : (rest.split(/\s+/)[0] ?? '')
+      flushParagraph()
+      inFence = true
+      fenceLang = lang
+      codeLines.length = 0
+      continue
+    }
+
+    paragraphLines.push(line)
+  }
+
+  if (inFence) {
+    paragraphLines.push(`\`\`\`${fenceLang}`)
+    for (const cl of codeLines) {
+      paragraphLines.push(cl)
+    }
+  }
+
+  flushParagraph()
+  return blocks.length > 0 ? blocks : [{ kind: 'markdown', text }]
 }
 
 function parseInlineSegments(text: string): InlineSegment[] {
@@ -972,6 +1048,18 @@ onBeforeUnmount(() => {
 .message-text {
   @apply m-0 text-sm leading-relaxed whitespace-pre-wrap break-words text-slate-800;
   overflow-wrap: anywhere;
+}
+
+.message-code-block {
+  @apply my-2 w-full min-w-0 max-w-full overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2;
+}
+
+.message-code-block-inner {
+  @apply m-0 block font-mono text-[0.8125rem] leading-relaxed text-slate-900 whitespace-pre;
+}
+
+.message-card[data-role='user'] .message-code-block {
+  @apply max-w-[min(560px,100%)];
 }
 
 .message-inline-code {

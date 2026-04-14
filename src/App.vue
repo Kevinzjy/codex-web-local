@@ -533,7 +533,7 @@ function onRenameProject(payload: { projectName: string; displayName: string }):
 }
 
 function onRemoveProject(projectName: string): void {
-  removeProject(projectName)
+  void removeProject(projectName)
 }
 
 function onReorderProject(payload: { projectName: string; toIndex: number }): void {

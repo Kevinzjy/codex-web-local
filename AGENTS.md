@@ -81,8 +81,10 @@ The installed CLI also accepts proxy flags that are passed to `codex app-server`
 
 - New chat project selection uses `ComposerDropdown` with search; **Add new project** opens a **server-side directory picker** (host paths). Optional **New folder** creates a directory under the current picker path (`POST /codex-api/fs/mkdir`). Manual path entry remains as a fallback.
 - The chosen folder is a cwd string used when the first message creates a new Codex thread.
+- **Project row:** The **⋯** menu and **right-click** on the project header open the same menu (`SidebarThreadTree.vue`). Right-click positions the panel with its top-left near the cursor (opens down-right); the dots trigger uses an anchored panel (`project-menu-panel--anchor` with `-translate-x-full`). **Remove project dir** calls `removeProject` in `useDesktopState.ts`: `archiveThread` for every thread in that project, `loadThreads()`, then `removeProjectFromLocalState` (order, `sourceGroups`, display names, cwd map, pins/unread pruning, selection).
 - Message file references support backtick paths and Markdown links such as `[App.vue](/abs/path/App.vue)`.
 - File links are displayed as paths relative to the active thread cwd when possible, matching the Codex CLI style more closely than basename-only rendering.
+- **Message body rendering (`ThreadConversation.vue`):** `parseMessageBlocks` splits triple-backtick fenced code regions from the rest of the text; fenced blocks render as `<pre><code>` (`.message-code-block`); other paragraphs still go through `parseInlineSegments`. Dark theme overrides for code blocks live in `style.css`.
 - The composer uses a textarea. `Enter` submits, `Shift+Enter` inserts a newline, and IME composition Enter is not submitted.
 
 ## Recently shipped (do not duplicate in backlog below)
@@ -102,6 +104,9 @@ These are already in the tree; the follow-up plan only lists **remaining** work.
 - **Remote project folder (fs API):** `GET /codex-api/fs/directories` lists child directories under `CODEX_WEB_PROJECT_ROOTS` (comma-separated) or defaults to `$HOME` + `process.cwd()`; navigation uses **logical paths** so symlinked home/project dirs behave predictably. **`POST /codex-api/fs/mkdir`** creates a single subfolder under an allowed parent (same security rules).
 - **Cold-load resilience:** `localStorage` session cache for sidebar quota + model/thinking defaults; `initialize` RPC is single-flight in the bridge to avoid duplicate `initialize` on parallel first requests; frontend retries transient **502/503** on `/codex-api/rpc`. Reduces “quota unavailable / empty model list” and occasional 502 on first paint when `codex app-server` is still starting.
 - **Install packaging:** `make install` uses `npm pack` + tarball (no fragile symlink to the repo tree).
+- **Remove project dir:** Archives all threads in the project via Codex RPC, refreshes the thread list, then clears local sidebar state for that project (persistent removal, not a cosmetic hide).
+- **Project menu UX:** Right-click on a project row opens the same menu as ⋯; cursor-anchored placement avoids the old `-translate-x-full` behavior that pulled the panel to the wrong side of the pointer.
+- **Fenced code in chat:** Triple-backtick blocks in message text render as dedicated code blocks with horizontal scroll and light/dark styling.
 
 ## Follow-Up Development Plan
 

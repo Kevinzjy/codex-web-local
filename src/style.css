@@ -723,6 +723,17 @@ body {
   color: #f4f4f5;
 }
 
+[data-theme='dark'] .message-code-block,
+[data-theme='dark'] .message-code-block.message-code-block {
+  border-color: #3a3d40;
+  background: #1b1d1f;
+}
+
+[data-theme='dark'] .message-code-block-inner,
+[data-theme='dark'] .message-code-block-inner.message-code-block-inner {
+  color: #e8e8ea;
+}
+
 [data-theme='dark'] .message-file-link,
 [data-theme='dark'] .message-file-link.message-file-link {
   color: #8ab4f8;

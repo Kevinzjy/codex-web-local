@@ -64,6 +64,12 @@ codex-web-local \
 
 When started with password protection (default), the server prints the password to the console. Open the URL in your browser, enter the password, and you're in.
 
+## Web UI highlights
+
+- **Threads sidebar:** Projects group chats by working directory. Use pin, archive, rename, and expand/collapse as needed. Open the project menu from the **⋯** control or by **right‑clicking the project row** (same actions). **Remove project dir** archives **all** chats under that project on the Codex host (so they do not reappear after refresh), then drops the project from the local sidebar and related saved UI state.
+- **New chat:** Choose a **folder on the machine running codex-web-local** (not the browser) for the initial cwd when creating a thread. Allowed roots are configurable via the server (see `CODEX_WEB_PROJECT_ROOTS` in the project’s `AGENTS.md` / server docs).
+- **Conversation:** Assistant and user messages support inline Markdown-style formatting where implemented (bold, inline code, file links). **Fenced code blocks** (triple backticks) render as scrollable code panels with monospace styling in light and dark themes.
+
 ## systemd user service (Linux)
 
 Run `codex-web-local` in the background with a **per-user** systemd unit (no root required for the app itself).
