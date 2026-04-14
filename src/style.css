@@ -505,16 +505,20 @@ body {
   color: #c6c7c9;
 }
 
-[data-theme='dark'] .thread-composer-context-usage.thread-composer-context-usage {
-  color: #a1a1aa;
+[data-theme='dark'] .thread-composer-context-ring-track {
+  stroke: #3f3f46;
 }
 
-[data-theme='dark'] .thread-composer-context-usage.thread-composer-context-usage[data-level='warning'] {
-  color: #fbbf24;
+[data-theme='dark'] .thread-composer-context-ring-fill {
+  stroke: #a1a1aa;
 }
 
-[data-theme='dark'] .thread-composer-context-usage.thread-composer-context-usage[data-level='danger'] {
-  color: #fb7185;
+[data-theme='dark'] .thread-composer-context-usage[data-level='warning'] .thread-composer-context-ring-fill {
+  stroke: #fbbf24;
+}
+
+[data-theme='dark'] .thread-composer-context-usage[data-level='danger'] .thread-composer-context-ring-fill {
+  stroke: #fb7185;
 }
 
 [data-theme='dark'] .thread-composer-add-files:hover,

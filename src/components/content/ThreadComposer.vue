@@ -15,21 +15,23 @@
         </li>
       </ul>
 
-      <textarea
-        id="thread-composer-message"
-        v-model="draft"
-        class="thread-composer-input"
-        name="message"
-        rows="1"
-        :placeholder="placeholderText"
-        :disabled="disabled || !activeThreadId || isTurnInProgress"
-        :readonly="isSpeechListening"
-        autocomplete="off"
-        @keydown="onInputKeydown"
-        @compositionstart="onCompositionStart"
-        @compositionend="onCompositionEnd"
-        @paste="onPaste"
-      />
+      <div class="thread-composer-message-row">
+        <textarea
+          id="thread-composer-message"
+          v-model="draft"
+          class="thread-composer-input"
+          name="message"
+          rows="1"
+          :placeholder="placeholderText"
+          :disabled="disabled || !activeThreadId || isTurnInProgress"
+          :readonly="isSpeechListening"
+          autocomplete="off"
+          @keydown="onInputKeydown"
+          @compositionstart="onCompositionStart"
+          @compositionend="onCompositionEnd"
+          @paste="onPaste"
+        />
+      </div>
 
       <p
         v-if="speechStatusVisible"
@@ -59,60 +61,77 @@
         @change="onImageInputChange"
       />
 
-      <div class="thread-composer-controls">
-        <button
-          class="thread-composer-add-files"
-          type="button"
-          aria-label="Add photos and files"
-          title="Add photos and files"
-          :disabled="!canEdit"
-          @click="openImageFilePicker"
-        >
-          <IconTablerPlus class="thread-composer-add-files-icon" />
-        </button>
+      <!-- Left: model / thinking / context — Right: attach / mic / send; space-between when wide -->
+      <div class="thread-composer-footer">
+        <div class="thread-composer-footer-controls">
+          <ComposerDropdown
+            class="thread-composer-control"
+            :model-value="selectedModel"
+            :options="modelOptions"
+            placeholder="Model"
+            open-direction="up"
+            :disabled="disabled || !activeThreadId || models.length === 0 || isTurnInProgress"
+            @update:model-value="onModelSelect"
+          />
 
-        <ComposerDropdown
-          class="thread-composer-control"
-          :model-value="selectedModel"
-          :options="modelOptions"
-          placeholder="Model"
-          open-direction="up"
-          :disabled="disabled || !activeThreadId || models.length === 0 || isTurnInProgress"
-          @update:model-value="onModelSelect"
-        />
+          <ComposerDropdown
+            class="thread-composer-control"
+            :model-value="selectedReasoningEffort"
+            :options="reasoningOptions"
+            placeholder="Thinking"
+            open-direction="up"
+            :disabled="disabled || !activeThreadId || isTurnInProgress"
+            @update:model-value="onReasoningEffortSelect"
+          />
 
-        <ComposerDropdown
-          class="thread-composer-control"
-          :model-value="selectedReasoningEffort"
-          :options="reasoningOptions"
-          placeholder="Thinking"
-          open-direction="up"
-          :disabled="disabled || !activeThreadId || isTurnInProgress"
-          @update:model-value="onReasoningEffortSelect"
-        />
+          <span
+            class="thread-composer-context-usage"
+            :data-level="contextUsageLevel"
+            :aria-label="contextUsageAriaLabel"
+            :title="contextUsageTitle"
+          >
+            <svg
+              class="thread-composer-context-ring"
+              viewBox="0 0 36 36"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <circle
+                class="thread-composer-context-ring-track"
+                cx="18"
+                cy="18"
+                :r="CONTEXT_RING_RADIUS"
+                fill="none"
+                stroke-width="3.5"
+              />
+              <circle
+                class="thread-composer-context-ring-fill"
+                cx="18"
+                cy="18"
+                :r="CONTEXT_RING_RADIUS"
+                fill="none"
+                stroke-width="3.5"
+                stroke-linecap="round"
+                :stroke-dasharray="contextRingCircumferenceStr"
+                :stroke-dashoffset="contextRingDashOffset"
+                transform="rotate(-90 18 18)"
+              />
+            </svg>
+          </span>
+        </div>
 
-        <ComposerDropdown
-          v-if="showPermissionMode"
-          class="thread-composer-control thread-composer-permission"
-          :model-value="permissionMode"
-          :options="permissionOptions"
-          placeholder="Permissions"
-          open-direction="up"
-          :disabled="disabled || !activeThreadId || isTurnInProgress"
-          @update:model-value="onPermissionModeSelect"
-        />
+        <div class="thread-composer-actions-rail" aria-label="Attachments and send">
+          <button
+            class="thread-composer-add-files"
+            type="button"
+            aria-label="Add images"
+            title="Add images"
+            :disabled="!canEdit"
+            @click="openImageFilePicker"
+          >
+            <IconTablerPhoto class="thread-composer-add-files-icon" />
+          </button>
 
-        <span
-          v-if="contextUsageLabel"
-          class="thread-composer-context-usage"
-          :data-level="contextUsageLevel"
-          :aria-label="`Context used ${contextUsageLabel}`"
-          :title="`Context used ${contextUsageLabel}`"
-        >
-          {{ contextUsageLabel }}
-        </span>
-
-        <div class="thread-composer-send-group">
           <button
             class="thread-composer-mic"
             type="button"
@@ -151,6 +170,20 @@
         </div>
       </div>
     </div>
+
+    <!-- Permission: outside the input card, bottom-right of the composer -->
+    <div v-if="showPermissionMode" class="thread-composer-permission-outside">
+      <ComposerDropdown
+        class="thread-composer-control thread-composer-permission thread-composer-permission-outside-dropdown"
+        :model-value="permissionMode"
+        :options="permissionOptions"
+        placeholder="Permissions"
+        open-direction="up"
+        menu-align="end"
+        :disabled="disabled || !activeThreadId || isTurnInProgress"
+        @update:model-value="onPermissionModeSelect"
+      />
+    </div>
   </form>
 </template>
 
@@ -162,7 +195,7 @@ import { isLikelyIOS } from '../../utils/platform'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
 import IconTablerPlayerStopFilled from '../icons/IconTablerPlayerStopFilled.vue'
 import IconTablerMicrophone from '../icons/IconTablerMicrophone.vue'
-import IconTablerPlus from '../icons/IconTablerPlus.vue'
+import IconTablerPhoto from '../icons/IconTablerPhoto.vue'
 import ComposerDropdown from './ComposerDropdown.vue'
 
 const MAX_IMAGE_COUNT = 8
@@ -217,10 +250,21 @@ const modelOptions = computed(() =>
 const permissionOptions: Array<{
   value: ThreadPermissionMode
   label: string
+  triggerLabel: string
   decoration: 'permission-default' | 'permission-full'
 }> = [
-  { value: 'default', label: 'Default', decoration: 'permission-default' },
-  { value: 'full-access', label: 'Full access', decoration: 'permission-full' },
+  {
+    value: 'default',
+    label: 'Default permissions',
+    triggerLabel: 'Default',
+    decoration: 'permission-default',
+  },
+  {
+    value: 'full-access',
+    label: 'Full access',
+    triggerLabel: 'Full access',
+    decoration: 'permission-full',
+  },
 ]
 
 const canSubmit = computed(() => {
@@ -262,11 +306,42 @@ const speechButtonTitle = computed(() => {
   if (isSpeechListening.value) return 'Stop dictation'
   return 'Start dictation (browser speech recognition)'
 })
-const contextUsageLabel = computed(() => {
+/** SVG ring math (viewBox 36×36, r = 14) */
+const CONTEXT_RING_RADIUS = 14
+const CONTEXT_RING_CIRCUMFERENCE = 2 * Math.PI * CONTEXT_RING_RADIUS
+const contextRingCircumferenceStr = String(CONTEXT_RING_CIRCUMFERENCE)
+
+const contextUsagePercentKnown = computed(() => {
   const percent = props.contextUsagePercent
-  if (typeof percent !== 'number' || !Number.isFinite(percent)) return ''
-  return `Context ${String(Math.round(Math.min(100, Math.max(0, percent))))}%`
+  return typeof percent === 'number' && Number.isFinite(percent)
 })
+
+/** 0–100 for the ring; unknown host values render as 0% fill. */
+const contextUsagePercentDisplayed = computed(() => {
+  const percent = props.contextUsagePercent
+  if (typeof percent !== 'number' || !Number.isFinite(percent)) return 0
+  return Math.round(Math.min(100, Math.max(0, percent)))
+})
+
+const contextRingDashOffset = computed(() => {
+  const p = contextUsagePercentDisplayed.value
+  return CONTEXT_RING_CIRCUMFERENCE * (1 - p / 100)
+})
+
+const contextUsageAriaLabel = computed(() => {
+  if (!contextUsagePercentKnown.value) {
+    return 'Context usage unknown; ring shows 0%'
+  }
+  return `${contextUsagePercentDisplayed.value}% of context window used`
+})
+
+const contextUsageTitle = computed(() => {
+  if (!contextUsagePercentKnown.value) {
+    return 'Context usage unknown (showing 0%)'
+  }
+  return `Context usage: ${contextUsagePercentDisplayed.value}%`
+})
+
 const contextUsageLevel = computed(() => {
   const percent = props.contextUsagePercent
   if (typeof percent !== 'number' || !Number.isFinite(percent)) return 'normal'
@@ -459,15 +534,35 @@ watch(
 @reference "tailwindcss";
 
 .thread-composer {
-  @apply w-full min-w-0 max-w-175 mx-auto px-6;
+  @apply box-border mx-auto w-full min-w-0 max-w-175 px-3 sm:px-6;
 }
 
 .thread-composer-shell {
-  @apply min-w-0 rounded-2xl border border-zinc-300 bg-white p-3 shadow-sm;
+  @apply w-full min-w-0 max-w-full rounded-2xl border border-zinc-300 bg-white p-3 shadow-sm;
+}
+
+.thread-composer-message-row {
+  @apply w-full min-w-0;
+}
+
+.thread-composer-message-row .thread-composer-input {
+  @apply w-full min-w-0;
+}
+
+.thread-composer-footer-controls {
+  @apply flex min-h-7 min-w-0 max-w-full flex-nowrap items-center gap-x-2;
+}
+
+.thread-composer-footer {
+  @apply mt-2 flex w-full min-w-0 flex-nowrap items-center justify-between gap-x-2;
+}
+
+.thread-composer-actions-rail {
+  @apply flex shrink-0 flex-row items-center gap-1.5;
 }
 
 .thread-composer-input {
-  @apply w-full min-w-0 min-h-11 max-h-40 resize-none rounded-xl border-0 bg-transparent px-1 py-3 text-sm leading-5 text-zinc-900 outline-none transition overflow-y-auto;
+  @apply box-border min-h-11 w-full min-w-0 max-h-40 resize-none rounded-xl border-0 bg-transparent px-1 py-3 text-sm leading-5 text-zinc-900 outline-none transition overflow-y-auto break-words [overflow-wrap:anywhere];
 }
 
 .thread-composer-input:focus {
@@ -522,8 +617,12 @@ watch(
   @apply mt-2 text-xs leading-snug text-zinc-500;
 }
 
-.thread-composer-controls {
-  @apply mt-3 flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-2;
+.thread-composer-permission-outside {
+  @apply mt-2 flex w-full min-w-0 justify-end pr-5 sm:pr-6;
+}
+
+.thread-composer-permission-outside-dropdown {
+  @apply min-w-0 max-w-[min(100%,13rem)] shrink-0;
 }
 
 .thread-composer-file-input {
@@ -559,7 +658,7 @@ watch(
 }
 
 .thread-composer-control {
-  @apply max-w-full shrink-0;
+  @apply min-w-0 max-w-[min(100%,11rem)] shrink sm:max-w-[14rem];
 }
 
 .thread-composer-permission {
@@ -567,19 +666,27 @@ watch(
 }
 
 .thread-composer-context-usage {
-  @apply shrink-0 text-xs font-medium text-zinc-500;
+  @apply inline-flex shrink-0 items-center justify-center;
 }
 
-.thread-composer-context-usage[data-level='warning'] {
-  @apply text-amber-600;
+.thread-composer-context-ring {
+  @apply h-4 w-4;
 }
 
-.thread-composer-context-usage[data-level='danger'] {
-  @apply text-rose-600;
+.thread-composer-context-ring-track {
+  @apply stroke-zinc-200;
 }
 
-.thread-composer-send-group {
-  @apply ml-auto flex shrink-0 items-center gap-2 max-sm:basis-full max-sm:justify-end;
+.thread-composer-context-ring-fill {
+  @apply stroke-zinc-500 transition-[stroke-dashoffset] duration-300 ease-out;
+}
+
+.thread-composer-context-usage[data-level='warning'] .thread-composer-context-ring-fill {
+  @apply stroke-amber-500;
+}
+
+.thread-composer-context-usage[data-level='danger'] .thread-composer-context-ring-fill {
+  @apply stroke-rose-500;
 }
 
 .thread-composer-submit {

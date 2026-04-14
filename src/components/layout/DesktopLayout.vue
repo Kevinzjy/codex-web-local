@@ -118,6 +118,6 @@ function onResizeHandleMouseDown(event: MouseEvent): void {
 }
 
 .desktop-main {
-  @apply bg-white min-h-0 min-w-0 overflow-y-hidden overflow-x-hidden;
+  @apply min-h-0 min-w-0 overflow-x-auto overflow-y-hidden bg-white;
 }
 </style>

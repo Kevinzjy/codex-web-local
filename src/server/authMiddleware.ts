@@ -59,7 +59,7 @@ form.addEventListener('submit',async e=>{
   e.preventDefault();
   errEl.style.display='none';
   const res=await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('pw').value})});
-  if(res.ok){window.location.reload()}else{errEl.style.display='block';document.getElementById('pw').value='';document.getElementById('pw').focus()}
+  if(res.ok){window.location.href='/'}else{errEl.style.display='block';document.getElementById('pw').value='';document.getElementById('pw').focus()}
 });
 </script>
 </body>

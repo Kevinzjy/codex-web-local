@@ -22,6 +22,7 @@
       :class="{
         'composer-dropdown-menu-wrap-up': openDirection === 'up',
         'composer-dropdown-menu-wrap-down': openDirection === 'down',
+        'composer-dropdown-menu-wrap-align-end': menuAlign === 'end',
       }"
     >
       <div class="composer-dropdown-menu">
@@ -44,6 +45,8 @@
               :class="{
                 'is-selected': option.value === modelValue,
                 'composer-dropdown-option--permission-full': option.decoration === 'permission-full',
+                'composer-dropdown-option--permission':
+                  option.decoration === 'permission-default' || option.decoration === 'permission-full',
               }"
               type="button"
               @click="onSelect(option.value)"
@@ -85,30 +88,39 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, withDefaults } from 'vue'
 import IconTablerChevronDown from '../icons/IconTablerChevronDown.vue'
 import PermissionModeIcon from './PermissionModeIcon.vue'
 
 type DropdownOption = {
   value: string
   label: string
+  /** If set, shown on the closed trigger instead of `label` (e.g. short status text). */
+  triggerLabel?: string
   /** Shield + prompt / warning icon for permission mode rows */
   decoration?: 'permission-default' | 'permission-full'
 }
 
-const props = defineProps<{
-  modelValue: string
-  options: DropdownOption[]
-  placeholder?: string
-  disabled?: boolean
-  openDirection?: 'up' | 'down'
-  searchable?: boolean
-  searchPlaceholder?: string
-  addOptionLabel?: string
-  addOptionPlaceholder?: string
-  /** When set, "Add new project" opens the parent overlay instead of inline text entry. */
-  directoryPicker?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    modelValue: string
+    options: DropdownOption[]
+    placeholder?: string
+    disabled?: boolean
+    openDirection?: 'up' | 'down'
+    /** When the trigger sits on the right edge, use "end" so the panel aligns to the trigger and stays in the viewport. */
+    menuAlign?: 'start' | 'end'
+    searchable?: boolean
+    searchPlaceholder?: string
+    addOptionLabel?: string
+    addOptionPlaceholder?: string
+    /** When set, "Add new project" opens the parent overlay instead of inline text entry. */
+    directoryPicker?: boolean
+  }>(),
+  {
+    menuAlign: 'start',
+  },
+)
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
@@ -127,7 +139,7 @@ const newOptionValue = ref('')
 
 const selectedLabel = computed(() => {
   const selected = props.options.find((option) => option.value === props.modelValue)
-  if (selected) return selected.label
+  if (selected) return selected.triggerLabel ?? selected.label
   return props.placeholder?.trim() || ''
 })
 
@@ -262,6 +274,10 @@ onBeforeUnmount(() => {
   @apply absolute left-0 z-30;
 }
 
+.composer-dropdown-menu-wrap-align-end {
+  @apply right-0 left-auto;
+}
+
 .composer-dropdown-menu-wrap-down {
   @apply top-[calc(100%+8px)];
 }
@@ -271,7 +287,7 @@ onBeforeUnmount(() => {
 }
 
 .composer-dropdown-menu {
-  @apply min-w-40 rounded-xl border border-zinc-200 bg-white p-1 shadow-lg;
+  @apply min-w-40 max-w-[min(20rem,calc(100vw-1.5rem))] rounded-xl border border-zinc-200 bg-white p-1 shadow-lg;
 }
 
 .composer-dropdown-search {
@@ -284,6 +300,10 @@ onBeforeUnmount(() => {
 
 .composer-dropdown-option {
   @apply flex w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 py-1.5 text-left text-sm text-zinc-700 transition hover:bg-zinc-100;
+}
+
+.composer-dropdown-option--permission {
+  @apply whitespace-nowrap;
 }
 
 .composer-dropdown-option.is-selected {
