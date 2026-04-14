@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { ChatStateStore, type ChatStatePatch } from './chatStateStore.js'
 import { cwdIsKnownCodexWorkspace } from './codexThreadGitAllowance.js'
-import { getGitStatusForCwd } from './gitStatus.js'
+import { createGitWorktreeForCwd, getGitStatusForCwd } from './gitStatus.js'
 import { handleFsDirectoriesGet, handleFsMkdirPost } from './fsDirectories.js'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -595,8 +595,13 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
           return
         }
 
-        const result = await appServer.rpc(body.method, body.params ?? null)
-        setJson(res, 200, { result })
+        try {
+          const result = await appServer.rpc(body.method, body.params ?? null)
+          setJson(res, 200, { result })
+        } catch (error) {
+          const message = getErrorMessage(error, 'RPC failed')
+          setJson(res, 500, { error: message, method: body.method })
+        }
         return
       }
 
@@ -648,6 +653,37 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
             cwdIsKnownCodexWorkspace((method, params) => appServer.rpc(method, params), resolved, requested),
         })
         setJson(res, 200, payload)
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/git/worktree') {
+        const payload = await readJsonBody(req)
+        const body = payload as { cwd?: unknown; path?: unknown; branch?: unknown }
+        const rawCwd = typeof body?.cwd === 'string' ? body.cwd : ''
+        const pathSpec = typeof body?.path === 'string' ? body.path : ''
+        const branchName = typeof body?.branch === 'string' ? body.branch : ''
+        if (!rawCwd.trim() || !pathSpec.trim() || !branchName.trim()) {
+          setJson(res, 400, { error: 'Missing cwd, path, or branch in JSON body' })
+          return
+        }
+
+        const result = await createGitWorktreeForCwd(rawCwd, pathSpec, branchName, {
+          allowIfKnownCodexCwd: async ({ resolved, requested }) =>
+            cwdIsKnownCodexWorkspace((method, params) => appServer.rpc(method, params), resolved, requested),
+        })
+
+        if (result.ok) {
+          setJson(res, 200, result)
+          return
+        }
+
+        const status =
+          result.code === 'not_allowed'
+            ? 403
+            : result.code === 'git_failed'
+              ? 500
+              : 400
+        setJson(res, status, { error: result.error, code: result.code })
         return
       }
 
@@ -736,7 +772,7 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
       next()
     } catch (error) {
       const message = getErrorMessage(error, 'Unknown bridge error')
-      setJson(res, 502, { error: message })
+      setJson(res, 500, { error: message })
     }
   }
 

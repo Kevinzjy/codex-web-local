@@ -13,6 +13,7 @@ import {
   getThreadGroups,
   getThreadMessages,
   resumeThread,
+  forkThread,
   setThreadName as setThreadNameApi,
   startThread,
   subscribeCodexNotifications,
@@ -684,6 +685,8 @@ export function useDesktopState() {
   const liveAgentMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
   const liveReasoningTextByThreadId = ref<Record<string, string>>({})
   const inProgressById = ref<Record<string, boolean>>({})
+  /** Thread ids created locally that are not yet returned by thread list API (can lag several seconds). */
+  const threadIdsAwaitingSidebar = ref<Set<string>>(new Set())
   const eventUnreadByThreadId = ref<Record<string, boolean>>({})
   const availableModelIds = ref<string[]>([])
   const selectedModelId = ref('')
@@ -986,6 +989,18 @@ export function useDesktopState() {
 
   function pruneThreadScopedState(flatThreads: UiThread[]): void {
     const activeThreadIds = new Set(flatThreads.map((thread) => thread.id))
+    const selected = selectedThreadId.value.trim()
+    if (selected) {
+      activeThreadIds.add(selected)
+    }
+    for (const id of threadIdsAwaitingSidebar.value) {
+      activeThreadIds.add(id)
+    }
+    for (const [tid, v] of Object.entries(inProgressById.value)) {
+      if (v === true) {
+        activeThreadIds.add(tid)
+      }
+    }
     const nextReadState = pruneThreadStateMap(readStateByThreadId.value, activeThreadIds)
     if (nextReadState !== readStateByThreadId.value) {
       readStateByThreadId.value = nextReadState
@@ -1909,6 +1924,20 @@ export function useDesktopState() {
     }
   }
 
+  function markThreadAwaitingSidebar(threadId: string): void {
+    const tid = threadId.trim()
+    if (!tid) return
+    const next = new Set(threadIdsAwaitingSidebar.value)
+    next.add(tid)
+    threadIdsAwaitingSidebar.value = next
+  }
+
+  function isThreadAwaitingSidebar(threadId: string): boolean {
+    const tid = threadId.trim()
+    if (!tid) return false
+    return threadIdsAwaitingSidebar.value.has(tid)
+  }
+
   async function loadThreads() {
     if (!hasLoadedThreads.value) {
       isLoadingThreads.value = true
@@ -1930,20 +1959,41 @@ export function useDesktopState() {
 
       const orderedGroups = orderGroupsByProjectOrder(groups, projectOrder.value)
       sourceGroups.value = mergeThreadGroups(sourceGroups.value, orderedGroups)
-      inProgressById.value = pruneThreadStateMap(
-        inProgressById.value,
-        new Set(flattenThreads(sourceGroups.value).map((thread) => thread.id)),
-      )
+      const serverThreadIds = new Set(flattenThreads(sourceGroups.value).map((thread) => thread.id))
+      const inProgressKeepIds = new Set(serverThreadIds)
+      for (const [tid, v] of Object.entries(inProgressById.value)) {
+        if (v === true) {
+          inProgressKeepIds.add(tid)
+        }
+      }
+      inProgressById.value = pruneThreadStateMap(inProgressById.value, inProgressKeepIds)
       applyThreadFlags()
       syncPersistedProjectCwdsFromSourceGroups()
       hasLoadedThreads.value = true
 
       const flatThreads = flattenThreads(projectGroups.value)
+      if (threadIdsAwaitingSidebar.value.size > 0) {
+        const listed = new Set(flatThreads.map((thread) => thread.id))
+        const nextAwaiting = new Set(threadIdsAwaitingSidebar.value)
+        for (const id of nextAwaiting) {
+          if (listed.has(id)) {
+            nextAwaiting.delete(id)
+          }
+        }
+        if (nextAwaiting.size !== threadIdsAwaitingSidebar.value.size) {
+          threadIdsAwaitingSidebar.value = nextAwaiting
+        }
+      }
       pruneThreadScopedState(flatThreads)
 
       const currentExists = flatThreads.some((thread) => thread.id === selectedThreadId.value)
 
       if (!currentExists) {
+        const sid = selectedThreadId.value
+        if (sid && inProgressById.value[sid] === true) {
+          // Thread list can lag behind startThread; keep optimistic selection until the list catches up.
+          return
+        }
         setSelectedThreadId(flatThreads[0]?.id ?? '')
       }
     } finally {
@@ -2126,6 +2176,7 @@ export function useDesktopState() {
       threadId = await startThread(targetCwd || undefined, selectedModel || undefined)
       if (!threadId) return ''
 
+      markThreadAwaitingSidebar(threadId)
       resumedThreadById.value = {
         ...resumedThreadById.value,
         [threadId]: true,
@@ -2717,6 +2768,48 @@ export function useDesktopState() {
     return projectCwdByProjectName.value[projectName]?.trim() ?? ''
   }
 
+  async function startEmptyThreadAtWorktreeCwd(cwd: string): Promise<string> {
+    const target = cwd.trim()
+    if (!target) {
+      throw new Error('Missing worktree path')
+    }
+    const model = selectedModelId.value.trim()
+    const threadId = await startThread(target, model || undefined)
+    markThreadAwaitingSidebar(threadId)
+    await loadThreads()
+    setSelectedThreadId(threadId)
+    return threadId
+  }
+
+  async function forkThreadToWorktreeCwd(sourceThreadId: string, cwd: string): Promise<string> {
+    const target = cwd.trim()
+    const sid = sourceThreadId.trim()
+    if (!target || !sid) {
+      throw new Error('Missing thread or worktree path')
+    }
+    const model = selectedModelId.value.trim()
+    error.value = ''
+    try {
+      const threadId = await forkThread(sid, {
+        cwd: target,
+        model: model || undefined,
+      })
+      await resumeThread(threadId)
+      resumedThreadById.value = {
+        ...resumedThreadById.value,
+        [threadId]: true,
+      }
+      markThreadAwaitingSidebar(threadId)
+      setSelectedThreadId(threadId)
+      await loadThreads()
+      return threadId
+    } catch (unknownError) {
+      const message = unknownError instanceof Error ? unknownError.message : 'Failed to fork thread'
+      error.value = message
+      throw unknownError
+    }
+  }
+
   return {
     projectGroups,
     projectDisplayNameById,
@@ -2769,5 +2862,9 @@ export function useDesktopState() {
     toggleAutoRefreshTimer,
     startPolling,
     stopPolling,
+    loadThreads,
+    isThreadAwaitingSidebar,
+    startEmptyThreadAtWorktreeCwd,
+    forkThreadToWorktreeCwd,
   }
 }

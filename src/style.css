@@ -325,6 +325,80 @@ body {
   background: #f4f4f5;
 }
 
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-dialog {
+  border-color: #3a3d40;
+  background: #1b1d1f;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.38);
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-title {
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-hint {
+  color: #a1a1aa;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-code {
+  background: #111315;
+  color: #e5e7eb;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-label {
+  color: #d4d4d8;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-input {
+  border-color: #3a3d40;
+  background: #111315;
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-input::placeholder {
+  color: #777b80;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-input:focus {
+  border-color: #52525b;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-actions {
+  border-color: #33363a;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-cancel {
+  border-color: #3a3d40;
+  background: #1b1d1f;
+  color: #e5e7eb;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-cancel:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-confirm {
+  border-color: #52525b;
+  background: #e5e7eb;
+  color: #111315;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-confirm:hover:enabled {
+  background: #f4f4f5;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-after-legend {
+  color: #d4d4d8;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-radio {
+  color: #e5e7eb;
+}
+
+[data-theme='dark'].git-worktree-modal-root .git-worktree-modal-radio--disabled {
+  color: #71717a;
+}
+
 [data-theme='dark'] .thread-type-menu-actions,
 [data-theme='dark'] .thread-type-menu-actions.thread-type-menu-actions {
   border-color: #33363a;
@@ -523,6 +597,39 @@ body {
 
 [data-theme='dark'] .thread-composer-add-files:hover,
 [data-theme='dark'] .thread-composer-mic:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f4f4f5;
+}
+
+/* Thread composer: model / thinking / permission dropdowns + New worktree — same hover as attach + mic (avoid Tailwind zinc-100 reading as white on #1f2123) */
+[data-theme='dark'] .thread-composer .composer-dropdown-trigger:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f4f4f5;
+}
+
+[data-theme='dark'] .thread-composer .composer-dropdown-trigger:hover:not(:disabled) .composer-dropdown-value,
+[data-theme='dark'] .thread-composer .composer-dropdown-trigger:hover:not(:disabled) .composer-dropdown-chevron {
+  color: #f4f4f5;
+}
+
+[data-theme='dark'] .thread-composer .composer-dropdown-trigger--permission-full:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fb923c;
+}
+
+[data-theme='dark'] .thread-composer .composer-dropdown-trigger--permission-full:hover:not(:disabled) .composer-dropdown-chevron {
+  color: #fb923c;
+}
+
+[data-theme='dark'] .thread-composer .composer-dropdown-trigger:hover:not(:disabled) .permission-mode-icon--default {
+  color: #f4f4f5;
+}
+
+[data-theme='dark'] .thread-composer .composer-dropdown-trigger--permission-full:hover:not(:disabled) .permission-mode-icon--full {
+  color: #fb923c;
+}
+
+[data-theme='dark'] .thread-composer-new-worktree:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.1);
   color: #f4f4f5;
 }

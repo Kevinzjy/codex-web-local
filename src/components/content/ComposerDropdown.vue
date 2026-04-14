@@ -5,6 +5,7 @@
       type="button"
       :class="{ 'composer-dropdown-trigger--permission-full': selectedDecoration === 'permission-full' }"
       :disabled="disabled"
+      :title="triggerTitle"
       @click="onToggle"
     >
       <PermissionModeIcon
@@ -116,6 +117,8 @@ const props = withDefaults(
     addOptionPlaceholder?: string
     /** When set, "Add new project" opens the parent overlay instead of inline text entry. */
     directoryPicker?: boolean
+    /** Native tooltip on the trigger (e.g. "Choose model"). */
+    triggerTitle?: string
   }>(),
   {
     menuAlign: 'start',
@@ -227,15 +230,39 @@ onBeforeUnmount(() => {
 }
 
 .composer-dropdown-trigger {
-  @apply inline-flex h-7 max-w-full min-w-0 items-center gap-1 border-0 bg-transparent p-0 text-sm leading-none text-zinc-500 outline-none transition;
+  @apply inline-flex h-8 max-w-full min-w-0 items-center gap-1 rounded-lg border border-transparent bg-transparent px-2 text-sm leading-none text-zinc-500 outline-none transition hover:bg-zinc-100 hover:text-zinc-900;
 }
 
 .composer-dropdown-trigger--permission-full {
   @apply text-orange-400;
 }
 
+.composer-dropdown-trigger--permission-full:not(:disabled):hover {
+  @apply bg-zinc-100 text-orange-600;
+}
+
+.composer-dropdown-trigger:not(:disabled):hover .composer-dropdown-chevron {
+  @apply text-zinc-900;
+}
+
+.composer-dropdown-trigger--permission-full:not(:disabled):hover .composer-dropdown-chevron {
+  @apply text-orange-600;
+}
+
+.composer-dropdown-trigger:not(:disabled):hover :deep(.permission-mode-icon--default) {
+  @apply text-zinc-900;
+}
+
+.composer-dropdown-trigger--permission-full:not(:disabled):hover :deep(.permission-mode-icon--full) {
+  @apply text-orange-600;
+}
+
 .composer-dropdown-trigger:disabled {
-  @apply cursor-not-allowed text-zinc-500;
+  @apply cursor-not-allowed text-zinc-400 opacity-50 hover:bg-transparent hover:text-zinc-400;
+}
+
+.composer-dropdown-trigger:disabled .composer-dropdown-chevron {
+  @apply text-zinc-400;
 }
 
 .composer-dropdown-perm-icon {

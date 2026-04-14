@@ -136,12 +136,28 @@ function normalizeThreadIdFromPayload(payload: unknown): string {
   if (!payload || typeof payload !== 'object') return ''
   const record = payload as Record<string, unknown>
 
+  const pickId = (obj: Record<string, unknown>): string => {
+    for (const key of ['id', 'threadId']) {
+      const v = obj[key]
+      if (typeof v === 'string' && v.trim().length > 0) {
+        return v.trim()
+      }
+    }
+    return ''
+  }
+
   const thread = record.thread
   if (thread && typeof thread === 'object') {
-    const threadId = (thread as Record<string, unknown>).id
-    if (typeof threadId === 'string' && threadId.length > 0) {
-      return threadId
-    }
+    const fromNested = pickId(thread as Record<string, unknown>)
+    if (fromNested) return fromNested
+  }
+
+  const top = pickId(record)
+  if (top) return top
+
+  const alt = record.threadId ?? record.thread_id
+  if (typeof alt === 'string' && alt.trim().length > 0) {
+    return alt.trim()
   }
   return ''
 }
@@ -163,6 +179,36 @@ export async function startThread(cwd?: string, model?: string): Promise<string>
     return threadId
   } catch (error) {
     throw normalizeCodexApiError(error, 'Failed to start a new thread', 'thread/start')
+  }
+}
+
+export async function forkThread(
+  sourceThreadId: string,
+  options: { cwd: string; model?: string; persistExtendedHistory?: boolean },
+): Promise<string> {
+  try {
+    const trimmedId = sourceThreadId.trim()
+    const cwd = options.cwd.trim()
+    if (!trimmedId || !cwd) {
+      throw new Error('thread/fork requires thread id and cwd')
+    }
+    const params: Record<string, unknown> = {
+      threadId: trimmedId,
+      cwd,
+      // true requires Codex experimentalApi; default false matches schema default and works without it.
+      persistExtendedHistory: options.persistExtendedHistory ?? false,
+    }
+    if (typeof options.model === 'string' && options.model.trim().length > 0) {
+      params.model = options.model.trim()
+    }
+    const payload = await callRpc<{ thread?: { id?: string } }>('thread/fork', params)
+    const threadId = normalizeThreadIdFromPayload(payload)
+    if (!threadId) {
+      throw new Error('thread/fork did not return a thread id')
+    }
+    return threadId
+  } catch (error) {
+    throw normalizeCodexApiError(error, 'Failed to fork thread', 'thread/fork')
   }
 }
 

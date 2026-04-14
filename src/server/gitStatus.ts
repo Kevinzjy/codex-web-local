@@ -1,10 +1,11 @@
 import { realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { isAbsolute, normalize, resolve } from 'node:path'
+import { dirname, isAbsolute, normalize, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
 const GIT_STATUS_TIMEOUT_MS = 1500
 const GIT_REV_PARSE_TIMEOUT_MS = 800
+const GIT_WORKTREE_TIMEOUT_MS = 60_000
 const CACHE_TTL_MS = 3000
 
 export type GitStatusOptions = {
@@ -88,6 +89,24 @@ function isPathUnderAllowedRoot(resolvedPath: string, roots: string[]): boolean 
     if (pathNorm.startsWith(`${rootNorm}/`)) return true
   }
   return false
+}
+
+/** Normalize for stable prefix / dirname comparisons (Windows-safe). */
+function pathNormSlashes(p: string): string {
+  return normalize(p).replace(/\\/gu, '/')
+}
+
+/**
+ * Worktree target is allowed when it lives under the repo root, or shares the same parent
+ * directory as the repo root (typical `../my-wt` next to the clone). Cwd was already validated.
+ */
+function isWorktreePathAnchoredToRepo(resolvedWorktree: string, repoToplevel: string): boolean {
+  const wtSl = pathNormSlashes(resolvedWorktree)
+  const tlSl = pathNormSlashes(repoToplevel)
+  if (wtSl.startsWith(`${tlSl}/`)) return true
+  const parentWt = pathNormSlashes(dirname(resolvedWorktree))
+  const parentTl = pathNormSlashes(dirname(repoToplevel))
+  return parentWt === parentTl
 }
 
 async function resolveSafeCwd(
@@ -379,6 +398,98 @@ async function computeGitStatus(resolvedCwd: string): Promise<GitStatusResponse>
     behind: parsed.behind,
     lastUpdatedAt,
   }
+}
+
+export type GitWorktreeCreateResult =
+  | { ok: true; worktreePath: string; branch: string }
+  | { ok: false; error: string; code?: 'not_found' | 'not_allowed' | 'not_git_repo' | 'git_failed' }
+
+/**
+ * Runs `git -C <toplevel> worktree add <path> -b <branch>` (same as the CLI).
+ * Relative paths are resolved from the repository root; absolute paths are used as-is after normalization.
+ */
+export async function createGitWorktreeForCwd(
+  cwd: string,
+  worktreePathRaw: string,
+  branchRaw: string,
+  options?: GitStatusOptions,
+): Promise<GitWorktreeCreateResult> {
+  const worktreePathUser = worktreePathRaw.trim()
+  const branch = branchRaw.trim()
+  if (!worktreePathUser || !branch) {
+    return { ok: false, error: 'Path and branch name are required.', code: 'not_found' }
+  }
+  if (branch.includes('\0') || branch.includes('\n') || branch.includes('\r')) {
+    return { ok: false, error: 'Invalid branch name.', code: 'not_found' }
+  }
+
+  const resolved = await resolveSafeCwd(cwd, options)
+  if ('error' in resolved) {
+    return { ok: false, error: 'Working directory is not allowed or invalid.', code: resolved.error }
+  }
+
+  const topResult = await runGit(['-C', resolved.resolved, 'rev-parse', '--show-toplevel'], GIT_REV_PARSE_TIMEOUT_MS)
+  if (topResult.timedOut) {
+    return { ok: false, error: 'git rev-parse timed out', code: 'git_failed' }
+  }
+  if (topResult.exitCode !== 0) {
+    const err = `${topResult.stderr}\n${topResult.stdout}`.toLowerCase()
+    if (err.includes('not a git repository')) {
+      return { ok: false, error: 'Not a git repository.', code: 'not_git_repo' }
+    }
+    return {
+      ok: false,
+      error: topResult.stderr.trim() || 'Could not resolve git repository root.',
+      code: 'git_failed',
+    }
+  }
+
+  const toplevel = normalize(topResult.stdout.trim())
+  if (!toplevel) {
+    return { ok: false, error: 'Empty repository path from git.', code: 'git_failed' }
+  }
+
+  let resolvedTarget: string
+  try {
+    resolvedTarget = isAbsolute(worktreePathUser)
+      ? normalize(resolve(worktreePathUser))
+      : normalize(resolve(toplevel, worktreePathUser))
+  } catch {
+    return { ok: false, error: 'Invalid worktree path.', code: 'not_found' }
+  }
+
+  const roots = parseProjectRoots()
+  if (!isPathUnderAllowedRoot(resolvedTarget, roots) && !isWorktreePathAnchoredToRepo(resolvedTarget, toplevel)) {
+    return { ok: false, error: 'Worktree path is outside allowed project roots.', code: 'not_allowed' }
+  }
+
+  const wtResult = await runGit(
+    ['-C', toplevel, 'worktree', 'add', '-b', branch, resolvedTarget],
+    GIT_WORKTREE_TIMEOUT_MS,
+  )
+  if (wtResult.timedOut) {
+    return { ok: false, error: 'git worktree add timed out', code: 'git_failed' }
+  }
+  if (wtResult.exitCode !== 0) {
+    return {
+      ok: false,
+      error: wtResult.stderr.trim() || wtResult.stdout.trim() || `git worktree add failed (exit ${String(wtResult.exitCode)})`,
+      code: 'git_failed',
+    }
+  }
+
+  let finalPath = resolvedTarget
+  try {
+    finalPath = normalize(await realpath(resolvedTarget))
+  } catch {
+    finalPath = resolvedTarget
+  }
+
+  if (!isPathUnderAllowedRoot(finalPath, roots) && !isWorktreePathAnchoredToRepo(finalPath, toplevel)) {
+    return { ok: false, error: 'Worktree path is outside allowed roots.', code: 'not_allowed' }
+  }
+
+  return { ok: true, worktreePath: finalPath, branch }
 }
 
 export async function getGitStatusForCwd(cwd: string, options?: GitStatusOptions): Promise<GitStatusResponse> {

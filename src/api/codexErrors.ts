@@ -30,14 +30,23 @@ export function extractErrorMessage(payload: unknown, fallback: string): string 
   if (!record) return fallback
 
   const error = record.error
-  if (typeof error === 'string' && error.length > 0) return error
-
-  const nested = asRecord(error)
-  if (nested && typeof nested.message === 'string' && nested.message.length > 0) {
-    return nested.message
+  let message: string
+  if (typeof error === 'string' && error.length > 0) {
+    message = error
+  } else {
+    const nested = asRecord(error)
+    if (nested && typeof nested.message === 'string' && nested.message.length > 0) {
+      message = nested.message
+    } else {
+      return fallback
+    }
   }
 
-  return fallback
+  const method = record.method
+  if (typeof method === 'string' && method.length > 0) {
+    return `${message} (${method})`
+  }
+  return message
 }
 
 export function normalizeCodexApiError(error: unknown, fallback: string, method?: string): CodexApiError {

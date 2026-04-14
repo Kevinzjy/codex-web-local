@@ -412,6 +412,47 @@ export async function fetchGitStatus(cwd: string): Promise<UiGitStatus> {
   return payload as UiGitStatus
 }
 
+export type GitWorktreeCreateOk = { ok: true; worktreePath: string; branch: string }
+
+export async function createGitWorktree(cwd: string, path: string, branch: string): Promise<GitWorktreeCreateOk> {
+  let response: Response
+  try {
+    response = await fetch('/codex-api/git/worktree', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd, path, branch }),
+    })
+  } catch (error) {
+    throw new CodexApiError(
+      error instanceof Error ? error.message : 'Git worktree request failed before it was sent',
+      { code: 'network_error', method: 'git/worktree' },
+    )
+  }
+
+  let payload: unknown = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+
+  if (!response.ok) {
+    const err = extractErrorMessage(payload, `Git worktree failed with HTTP ${String(response.status)}`)
+    throw new CodexApiError(err, {
+      code: 'http_error',
+      method: 'git/worktree',
+      status: response.status,
+    })
+  }
+
+  const data = payload as Partial<GitWorktreeCreateOk>
+  if (data?.ok !== true || typeof data.worktreePath !== 'string' || typeof data.branch !== 'string') {
+    throw new CodexApiError('Unexpected response from git worktree', { code: 'invalid_response', method: 'git/worktree' })
+  }
+
+  return { ok: true, worktreePath: data.worktreePath, branch: data.branch }
+}
+
 export async function fetchPendingServerRequests(): Promise<unknown[]> {
   const response = await fetch('/codex-api/server-requests/pending')
 

@@ -71,6 +71,7 @@
             :options="modelOptions"
             placeholder="Model"
             open-direction="up"
+            trigger-title="Choose model"
             :disabled="disabled || !activeThreadId || models.length === 0 || isTurnInProgress"
             @update:model-value="onModelSelect"
           />
@@ -81,6 +82,7 @@
             :options="reasoningOptions"
             placeholder="Thinking"
             open-direction="up"
+            trigger-title="Select reasoning effort"
             :disabled="disabled || !activeThreadId || isTurnInProgress"
             @update:model-value="onReasoningEffortSelect"
           />
@@ -172,32 +174,64 @@
       </div>
     </div>
 
-    <!-- Permission: outside the input card, bottom-right of the composer -->
-    <div v-if="showPermissionMode" class="thread-composer-permission-outside">
-      <ComposerDropdown
-        class="thread-composer-control thread-composer-permission thread-composer-permission-outside-dropdown"
-        :model-value="permissionMode"
-        :options="permissionOptions"
-        placeholder="Permissions"
-        open-direction="up"
-        menu-align="end"
-        :disabled="disabled || !activeThreadId || isTurnInProgress"
-        @update:model-value="onPermissionModeSelect"
-      />
+    <!-- Worktree + permission: outside the input card, same row (left / right) -->
+    <div v-if="showComposerBottomBar" class="thread-composer-bottom-bar">
+      <div class="thread-composer-permission-outside">
+        <div class="thread-composer-permission-outside-left">
+          <button
+            v-if="threadCwd.trim().length > 0"
+            class="thread-composer-new-worktree"
+            type="button"
+            title="Select where to run the task"
+            :disabled="disabled || !activeThreadId || isTurnInProgress || worktreeCreating"
+            :aria-busy="worktreeCreating"
+            @click="worktreeModalOpen = true"
+          >
+            <IconTablerGitBranch class="thread-composer-new-worktree-icon" />
+            <span>{{ worktreeCreating ? 'Creating…' : 'New worktree' }}</span>
+          </button>
+        </div>
+        <ComposerDropdown
+          v-if="showPermissionMode"
+          class="thread-composer-control thread-composer-permission thread-composer-permission-outside-dropdown"
+          :model-value="permissionMode"
+          :options="permissionOptions"
+          placeholder="Permissions"
+          open-direction="up"
+          menu-align="end"
+          trigger-title="Change permissions"
+          :disabled="disabled || !activeThreadId || isTurnInProgress"
+          @update:model-value="onPermissionModeSelect"
+        />
+      </div>
+      <p v-if="worktreeStatusText" class="thread-composer-worktree-status" role="status">{{ worktreeStatusText }}</p>
     </div>
   </form>
+
+  <GitWorktreeModal
+    :open="worktreeModalOpen"
+    :theme="theme"
+    :can-fork="worktreeCanFork"
+    :busy="worktreeCreating"
+    @close="worktreeModalOpen = false"
+    @confirm="onConfirmGitWorktree"
+  />
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ReasoningEffort, ThreadPermissionMode, UiComposerDraft, UiComposerImage } from '../../types/codex'
 import { useWebSpeechRecognition } from '../../composables/useWebSpeechRecognition'
+import { createGitWorktree } from '../../api/codexRpcClient'
+import { CodexApiError } from '../../api/codexErrors'
 import { isLikelyIOS } from '../../utils/platform'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
 import IconTablerPlayerStopFilled from '../icons/IconTablerPlayerStopFilled.vue'
 import IconTablerMicrophone from '../icons/IconTablerMicrophone.vue'
 import IconTablerPhoto from '../icons/IconTablerPhoto.vue'
+import IconTablerGitBranch from '../icons/IconTablerGitBranch.vue'
 import ComposerDropdown from './ComposerDropdown.vue'
+import GitWorktreeModal, { type GitWorktreeFollowUp } from './GitWorktreeModal.vue'
 
 const MAX_IMAGE_COUNT = 8
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -206,6 +240,8 @@ const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', '
 const props = withDefaults(
   defineProps<{
     activeThreadId: string
+    /** Current thread or new-chat project directory; used for New worktree */
+    threadCwd?: string
     models: string[]
     selectedModel: string
     selectedReasoningEffort: ReasoningEffort | ''
@@ -215,10 +251,16 @@ const props = withDefaults(
     isTurnInProgress?: boolean
     isInterruptingTurn?: boolean
     disabled?: boolean
+    theme?: 'dark' | 'light'
+    /** When true, worktree dialog can offer “fork current thread” (e.g. thread view, not home). */
+    worktreeCanFork?: boolean
   }>(),
   {
+    threadCwd: '',
     permissionMode: 'default',
     showPermissionMode: false,
+    theme: 'light',
+    worktreeCanFork: false,
   },
 )
 
@@ -228,6 +270,7 @@ const emit = defineEmits<{
   'update:selected-model': [modelId: string]
   'update:selected-reasoning-effort': [effort: ReasoningEffort | '']
   'update:permission-mode': [mode: ThreadPermissionMode]
+  'worktree-created': [payload: { worktreePath: string; branch: string; followUp: GitWorktreeFollowUp }]
 }>()
 
 const draft = ref('')
@@ -271,6 +314,50 @@ const permissionOptions: Array<{
     decoration: 'permission-full',
   },
 ]
+
+const showComposerBottomBar = computed(
+  () => props.showPermissionMode || props.threadCwd.trim().length > 0,
+)
+
+const worktreeModalOpen = ref(false)
+const worktreeCreating = ref(false)
+const worktreeStatusText = ref('')
+let worktreeStatusClearTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearWorktreeStatusTimer(): void {
+  if (worktreeStatusClearTimer !== null) {
+    clearTimeout(worktreeStatusClearTimer)
+    worktreeStatusClearTimer = null
+  }
+}
+
+async function onConfirmGitWorktree(payload: {
+  path: string
+  branch: string
+  followUp: GitWorktreeFollowUp
+}): Promise<void> {
+  const cwd = props.threadCwd.trim()
+  if (!cwd || worktreeCreating.value) return
+  clearWorktreeStatusTimer()
+  worktreeCreating.value = true
+  worktreeStatusText.value = ''
+  try {
+    const r = await createGitWorktree(cwd, payload.path, payload.branch)
+    worktreeModalOpen.value = false
+    worktreeStatusText.value = ''
+    emit('worktree-created', {
+      worktreePath: r.worktreePath,
+      branch: r.branch,
+      followUp: payload.followUp,
+    })
+  } catch (err) {
+    const msg =
+      err instanceof CodexApiError ? err.message : err instanceof Error ? err.message : 'Failed to create worktree'
+    worktreeStatusText.value = msg
+  } finally {
+    worktreeCreating.value = false
+  }
+}
 
 const canSubmit = computed(() => {
   if (props.disabled) return false
@@ -536,12 +623,24 @@ function onPermissionModeSelect(value: string): void {
 watch(
   () => props.activeThreadId,
   () => {
+    worktreeModalOpen.value = false
+    clearWorktreeStatusTimer()
+    worktreeStatusText.value = ''
     speech.stop()
     speech.clearError()
     draft.value = ''
     images.value = []
     imageError.value = ''
     void nextTick(() => adjustComposerTextareaHeight())
+  },
+)
+
+watch(
+  () => props.threadCwd,
+  () => {
+    worktreeModalOpen.value = false
+    clearWorktreeStatusTimer()
+    worktreeStatusText.value = ''
   },
 )
 
@@ -555,6 +654,10 @@ watch(
 
 onMounted(() => {
   void nextTick(() => adjustComposerTextareaHeight())
+})
+
+onUnmounted(() => {
+  clearWorktreeStatusTimer()
 })
 </script>
 
@@ -578,11 +681,11 @@ onMounted(() => {
 }
 
 .thread-composer-footer-controls {
-  @apply flex min-h-7 min-w-0 max-w-full flex-nowrap items-center gap-x-2;
+  @apply flex min-h-8 min-w-0 max-w-full flex-nowrap items-center gap-x-2;
 }
 
 .thread-composer-footer {
-  @apply mt-2 flex w-full min-w-0 flex-nowrap items-center justify-between gap-x-2;
+  @apply mt-1 flex w-full min-w-0 flex-nowrap items-center justify-between gap-x-2;
 }
 
 .thread-composer-actions-rail {
@@ -590,7 +693,7 @@ onMounted(() => {
 }
 
 .thread-composer-input {
-  @apply box-border min-h-11 w-full min-w-0 max-h-40 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-1 py-3 text-sm leading-5 text-zinc-900 outline-none transition-colors break-words [overflow-wrap:anywhere];
+  @apply box-border min-h-11 w-full min-w-0 max-h-40 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-1 pt-3 pb-2 text-sm leading-5 text-zinc-900 outline-none transition-colors break-words [overflow-wrap:anywhere];
 }
 
 .thread-composer-input:focus {
@@ -645,8 +748,29 @@ onMounted(() => {
   @apply mt-2 text-xs leading-snug text-zinc-500;
 }
 
+/* Match .thread-composer-shell horizontal padding (p-3) so worktree aligns with model row and permission with send */
+.thread-composer-bottom-bar {
+  @apply mt-1 w-full min-w-0 px-3;
+}
+
 .thread-composer-permission-outside {
-  @apply mt-2 flex w-full min-w-0 justify-end pr-5 sm:pr-6;
+  @apply flex w-full min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1;
+}
+
+.thread-composer-permission-outside-left {
+  @apply flex min-w-0 shrink-0 items-center;
+}
+
+.thread-composer-new-worktree {
+  @apply inline-flex h-8 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2.5 text-xs font-medium text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-zinc-600;
+}
+
+.thread-composer-new-worktree-icon {
+  @apply h-3.5 w-3.5 shrink-0 text-current;
+}
+
+.thread-composer-worktree-status {
+  @apply mt-1 max-w-full break-words text-xs text-zinc-500;
 }
 
 .thread-composer-permission-outside-dropdown {
@@ -658,7 +782,7 @@ onMounted(() => {
 }
 
 .thread-composer-add-files {
-  @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:text-zinc-300 disabled:hover:bg-transparent;
+  @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:text-zinc-300 disabled:hover:bg-transparent;
 }
 
 .thread-composer-add-files-icon {
@@ -666,7 +790,7 @@ onMounted(() => {
 }
 
 .thread-composer-mic {
-  @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:pointer-events-none;
+  @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:pointer-events-none;
 }
 
 .thread-composer-mic:disabled {
@@ -718,7 +842,7 @@ onMounted(() => {
 }
 
 .thread-composer-submit {
-  @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-0 bg-zinc-900 text-white transition hover:bg-black disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500;
+  @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-0 bg-zinc-900 text-white transition hover:bg-black disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500;
 }
 
 .thread-composer-submit-icon {
@@ -726,7 +850,7 @@ onMounted(() => {
 }
 
 .thread-composer-stop {
-  @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-0 bg-zinc-900 text-white transition hover:bg-black disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500;
+  @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-0 bg-zinc-900 text-white transition hover:bg-black disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500;
 }
 
 .thread-composer-stop-icon {

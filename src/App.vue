@@ -119,6 +119,23 @@
           </template>
         </ContentHeader>
 
+        <div
+          v-if="error.trim().length > 0"
+          class="content-error-banner"
+          role="alert"
+          aria-live="assertive"
+        >
+          <p class="content-error content-error-text">{{ error }}</p>
+          <button
+            type="button"
+            class="content-error-dismiss"
+            aria-label="Dismiss error"
+            @click="dismissApplicationError"
+          >
+            Dismiss
+          </button>
+        </div>
+
         <section class="content-body">
           <template v-if="isHomeRoute">
             <div class="content-grid">
@@ -140,14 +157,18 @@
                 />
               </div>
 
-              <ThreadComposer :active-thread-id="composerThreadContextId" :disabled="isSendingMessage"
+              <ThreadComposer :active-thread-id="composerThreadContextId" :thread-cwd="composerThreadCwd"
+                :theme="themeName"
+                :worktree-can-fork="canForkWorktree"
+                :disabled="isSendingMessage"
                 :models="availableModelIds" :selected-model="selectedModelId"
                 :selected-reasoning-effort="selectedReasoningEffort" :is-turn-in-progress="false"
                 :context-usage-percent="null"
                 :is-interrupting-turn="false"
                 :show-permission-mode="false"
                 @submit="onSubmitThreadMessage"
-                @update:selected-model="onSelectModel" @update:selected-reasoning-effort="onSelectReasoningEffort" />
+                @update:selected-model="onSelectModel" @update:selected-reasoning-effort="onSelectReasoningEffort"
+                @worktree-created="onWorktreeCreated" />
             </div>
           </template>
           <template v-else>
@@ -162,7 +183,9 @@
                   @respond-server-request="onRespondServerRequest" />
               </div>
 
-              <ThreadComposer :active-thread-id="composerThreadContextId"
+              <ThreadComposer :active-thread-id="composerThreadContextId" :thread-cwd="composerThreadCwd"
+                :theme="themeName"
+                :worktree-can-fork="canForkWorktree"
                 :disabled="isSendingMessage || isLoadingMessages" :models="availableModelIds"
                 :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
                 :permission-mode="selectedThreadPermissionMode"
@@ -172,7 +195,8 @@
                 @submit="onSubmitThreadMessage" @update:selected-model="onSelectModel"
                 @update:selected-reasoning-effort="onSelectReasoningEffort"
                 @update:permission-mode="onPermissionMode"
-                @interrupt="onInterruptTurn" />
+                @interrupt="onInterruptTurn"
+                @worktree-created="onWorktreeCreated" />
             </div>
           </template>
         </section>
@@ -212,6 +236,7 @@ import ApprovalRequestsPanel from './components/content/ApprovalRequestsPanel.vu
 import ComposerDropdown from './components/content/ComposerDropdown.vue'
 import DirectoryPickerOverlay from './components/content/DirectoryPickerOverlay.vue'
 import FullAccessRiskModal from './components/content/FullAccessRiskModal.vue'
+import type { GitWorktreeFollowUp } from './components/content/GitWorktreeModal.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
 import SidebarRateLimitMeters from './components/sidebar/SidebarRateLimitMeters.vue'
 import GitStatusIndicator from './components/content/GitStatusIndicator.vue'
@@ -258,6 +283,7 @@ const {
   selectedThreadGitStatusLoading,
   accountRateLimits,
   accountRateLimitsError,
+  error,
   messages,
   isLoadingThreads,
   isLoadingMessages,
@@ -291,12 +317,17 @@ const {
   toggleAutoRefreshTimer,
   startPolling,
   stopPolling,
+  loadThreads,
+  isThreadAwaitingSidebar,
+  forkThreadToWorktreeCwd,
 } = useDesktopState()
 
 const route = useRoute()
 const router = useRouter()
 const isRouteSyncInProgress = ref(false)
 const hasInitialized = ref(false)
+/** While true, do not clear thread selection on the home route (new-thread send / worktree follow-up set selection before navigation). */
+const suppressHomeThreadClear = ref(false)
 const newThreadCwd = ref('')
 const newThreadCustomProjectOptions = ref<Array<{ value: string; label: string }>>([])
 const newThreadDirectoryPickerOpen = ref(false)
@@ -321,11 +352,23 @@ const knownThreadIdSet = computed(() => {
   return ids
 })
 
+const routeThreadAwaitingSidebar = computed(() => {
+  const id = routeThreadId.value
+  return id ? isThreadAwaitingSidebar(id) : false
+})
+
 const isHomeRoute = computed(() => route.name === 'home')
+
+const canForkWorktree = computed(() => !isHomeRoute.value && selectedThreadId.value.trim().length > 0)
 const themeName = computed(() => (isDarkMode.value ? 'dark' : 'light'))
 const themeToggleLabel = computed(() => (isDarkMode.value ? 'Switch to light mode' : 'Switch to dark mode'))
 const contentTitle = computed(() => {
   if (isHomeRoute.value) return 'New thread'
+  const rid = routeThreadId.value.trim()
+  const sid = selectedThreadId.value.trim()
+  if (rid && sid === rid && !selectedThread.value) {
+    return 'Loading new thread'
+  }
   return selectedThread.value?.title ?? 'Choose a thread'
 })
 const autoRefreshButtonLabel = computed(() =>
@@ -346,6 +389,9 @@ const selectedNonApprovalServerRequests = computed(() =>
   selectedThreadServerRequests.value.filter((request) => !isApprovalRequest(request)),
 )
 const composerThreadContextId = computed(() => (isHomeRoute.value ? '__new-thread__' : selectedThreadId.value))
+const composerThreadCwd = computed(() =>
+  isHomeRoute.value ? newThreadCwd.value.trim() : (selectedThread.value?.cwd ?? '').trim(),
+)
 const isSelectedThreadInProgress = computed(() => !isHomeRoute.value && selectedThread.value?.inProgress === true)
 const newThreadFolderOptions = computed(() => {
   const options: Array<{ value: string; label: string }> = []
@@ -401,10 +447,51 @@ function onSidebarSearchKeydown(event: KeyboardEvent): void {
   }
 }
 
+function dismissApplicationError(): void {
+  error.value = ''
+}
+
 function onSelectThread(threadId: string): void {
   if (!threadId) return
   if (route.name === 'thread' && routeThreadId.value === threadId) return
   void router.push({ name: 'thread', params: { threadId } })
+}
+
+async function onWorktreeCreated(payload: {
+  worktreePath: string
+  branch: string
+  followUp: GitWorktreeFollowUp
+}): Promise<void> {
+  const cwd = payload.worktreePath.trim()
+  if (!cwd) return
+  if (payload.followUp === 'none') return
+
+  if (payload.followUp === 'new-thread') {
+    onAddNewThreadProject(cwd)
+    if (!isHomeRoute.value) {
+      void router.push({ name: 'home' })
+    }
+    return
+  }
+
+  if (payload.followUp === 'fork-thread') {
+    let sourceId = selectedThreadId.value.trim()
+    if (!sourceId && route.name === 'thread') {
+      sourceId = routeThreadId.value.trim()
+    }
+    if (!sourceId) return
+    suppressHomeThreadClear.value = true
+    try {
+      const threadId = await forkThreadToWorktreeCwd(sourceId, cwd)
+      if (!threadId.trim()) return
+      await router.push({ name: 'thread', params: { threadId } })
+      await selectThread(threadId)
+    } catch {
+      // Error is surfaced via desktop state.
+    } finally {
+      suppressHomeThreadClear.value = false
+    }
+  }
 }
 
 function onArchiveThread(threadId: string): void {
@@ -579,9 +666,10 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
 
   try {
     if (route.name === 'home') {
-      if (selectedThreadId.value !== '') {
-        await selectThread('')
-      }
+      if (selectedThreadId.value === '') return
+      if (suppressHomeThreadClear.value) return
+      if (isSendingMessage.value) return
+      await selectThread('')
       return
     }
 
@@ -590,8 +678,19 @@ async function syncThreadSelectionWithRoute(): Promise<void> {
       if (!threadId) return
 
       if (!knownThreadIdSet.value.has(threadId)) {
-        await router.replace({ name: 'home' })
-        return
+        if (isLoadingThreads.value) {
+          return
+        }
+        await loadThreads()
+        if (!knownThreadIdSet.value.has(threadId)) {
+          const sid = selectedThreadId.value.trim()
+          if (sid === threadId && isThreadAwaitingSidebar(threadId)) {
+            await selectThread(threadId)
+            return
+          }
+          await router.replace({ name: 'home' })
+          return
+        }
       }
 
       if (selectedThreadId.value !== threadId) {
@@ -612,6 +711,7 @@ watch(
       routeThreadId.value,
       isLoadingThreads.value,
       knownThreadIdSet.value.has(routeThreadId.value),
+      routeThreadAwaitingSidebar.value,
       selectedThreadId.value,
     ] as const,
   async () => {
@@ -655,12 +755,15 @@ watch(
 )
 
 async function submitFirstMessageForNewThread(draft: UiComposerDraft): Promise<void> {
+  suppressHomeThreadClear.value = true
   try {
     const threadId = await sendMessageToNewThread(draft, newThreadCwd.value)
     if (!threadId) return
     await router.replace({ name: 'thread', params: { threadId } })
   } catch {
     // Error is already reflected in state.
+  } finally {
+    suppressHomeThreadClear.value = false
   }
 }
 </script>
@@ -740,6 +843,18 @@ async function submitFirstMessageForNewThread(draft: UiComposerDraft): Promise<v
 .content-body {
   @apply flex-1 min-h-0 w-full min-w-0 flex flex-col gap-3 overflow-y-hidden overflow-x-auto pt-1;
   padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+}
+
+.content-error-banner {
+  @apply flex shrink-0 items-start gap-2 border-b border-rose-100 px-3 py-2;
+}
+
+.content-error-text {
+  @apply flex-1 min-w-0;
+}
+
+.content-error-dismiss {
+  @apply shrink-0 rounded-md border border-rose-200 bg-white px-2 py-0.5 text-xs text-rose-800 hover:bg-rose-50;
 }
 
 .content-error {
