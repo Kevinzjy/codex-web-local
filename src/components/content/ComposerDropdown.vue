@@ -3,9 +3,15 @@
     <button
       class="composer-dropdown-trigger"
       type="button"
+      :class="{ 'composer-dropdown-trigger--permission-full': selectedDecoration === 'permission-full' }"
       :disabled="disabled"
       @click="onToggle"
     >
+      <PermissionModeIcon
+        v-if="selectedDecoration === 'permission-default' || selectedDecoration === 'permission-full'"
+        :variant="selectedDecoration === 'permission-full' ? 'full' : 'default'"
+        class="composer-dropdown-perm-icon"
+      />
       <span class="composer-dropdown-value">{{ selectedLabel }}</span>
       <IconTablerChevronDown class="composer-dropdown-chevron" />
     </button>
@@ -21,22 +27,33 @@
       <div class="composer-dropdown-menu">
         <input
           v-if="searchable"
+          :id="`${fieldId}-search`"
           ref="searchInputRef"
           v-model="searchQuery"
           class="composer-dropdown-search"
-          type="text"
+          type="search"
+          :name="`${fieldId}-search`"
           :placeholder="searchPlaceholder || 'Search'"
+          autocomplete="off"
         />
 
         <ul class="composer-dropdown-options" role="listbox">
           <li v-for="option in filteredOptions" :key="option.value">
             <button
               class="composer-dropdown-option"
-              :class="{ 'is-selected': option.value === modelValue }"
+              :class="{
+                'is-selected': option.value === modelValue,
+                'composer-dropdown-option--permission-full': option.decoration === 'permission-full',
+              }"
               type="button"
               @click="onSelect(option.value)"
             >
-              {{ option.label }}
+              <PermissionModeIcon
+                v-if="option.decoration === 'permission-default' || option.decoration === 'permission-full'"
+                :variant="option.decoration === 'permission-full' ? 'full' : 'default'"
+                class="composer-dropdown-option-icon"
+              />
+              <span class="composer-dropdown-option-label">{{ option.label }}</span>
             </button>
           </li>
         </ul>
@@ -49,11 +66,14 @@
           </button>
           <form v-else class="composer-dropdown-add-form" @submit.prevent="onAddOptionSubmit">
             <input
+              :id="`${fieldId}-add`"
               ref="addOptionInputRef"
               v-model="newOptionValue"
               class="composer-dropdown-add-input"
               type="text"
+              :name="`${fieldId}-add`"
               :placeholder="addOptionPlaceholder || 'Value'"
+              autocomplete="off"
               @keydown.escape.prevent="closeAddOptionForm"
             />
             <button class="composer-dropdown-add-submit" type="submit">Add</button>
@@ -65,12 +85,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import IconTablerChevronDown from '../icons/IconTablerChevronDown.vue'
+import PermissionModeIcon from './PermissionModeIcon.vue'
 
 type DropdownOption = {
   value: string
   label: string
+  /** Shield + prompt / warning icon for permission mode rows */
+  decoration?: 'permission-default' | 'permission-full'
 }
 
 const props = defineProps<{
@@ -83,13 +106,17 @@ const props = defineProps<{
   searchPlaceholder?: string
   addOptionLabel?: string
   addOptionPlaceholder?: string
+  /** When set, "Add new project" opens the parent overlay instead of inline text entry. */
+  directoryPicker?: boolean
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
   addOption: [value: string]
+  'request-directory-picker': []
 }>()
 
+const fieldId = useId()
 const rootRef = ref<HTMLElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const addOptionInputRef = ref<HTMLInputElement | null>(null)
@@ -102,6 +129,11 @@ const selectedLabel = computed(() => {
   const selected = props.options.find((option) => option.value === props.modelValue)
   if (selected) return selected.label
   return props.placeholder?.trim() || ''
+})
+
+const selectedDecoration = computed(() => {
+  const selected = props.options.find((option) => option.value === props.modelValue)
+  return selected?.decoration
 })
 
 const openDirection = computed(() => props.openDirection ?? 'down')
@@ -134,6 +166,11 @@ function onSelect(value: string): void {
 }
 
 function openAddOptionForm(): void {
+  if (props.directoryPicker) {
+    emit('request-directory-picker')
+    closeDropdown()
+    return
+  }
   isAddingOption.value = true
   nextTick(() => addOptionInputRef.value?.focus())
 }
@@ -178,19 +215,47 @@ onBeforeUnmount(() => {
 }
 
 .composer-dropdown-trigger {
-  @apply inline-flex h-7 items-center gap-1 border-0 bg-transparent p-0 text-sm leading-none text-zinc-500 outline-none transition;
+  @apply inline-flex h-7 max-w-full min-w-0 items-center gap-1 border-0 bg-transparent p-0 text-sm leading-none text-zinc-500 outline-none transition;
+}
+
+.composer-dropdown-trigger--permission-full {
+  @apply text-orange-400;
 }
 
 .composer-dropdown-trigger:disabled {
   @apply cursor-not-allowed text-zinc-500;
 }
 
+.composer-dropdown-perm-icon {
+  @apply shrink-0;
+}
+
 .composer-dropdown-value {
-  @apply whitespace-nowrap text-left;
+  @apply min-w-0 truncate text-left;
 }
 
 .composer-dropdown-chevron {
   @apply mt-px h-3.5 w-3.5 shrink-0 text-zinc-500;
+}
+
+.composer-dropdown-trigger--permission-full .composer-dropdown-chevron {
+  @apply text-orange-400;
+}
+
+.composer-dropdown-option-icon {
+  @apply shrink-0;
+}
+
+.composer-dropdown-option-label {
+  @apply min-w-0 flex-1 text-left;
+}
+
+.composer-dropdown-option--permission-full {
+  @apply text-orange-400;
+}
+
+.composer-dropdown-option--permission-full:hover {
+  @apply bg-orange-950/30;
 }
 
 .composer-dropdown-menu-wrap {
@@ -218,7 +283,7 @@ onBeforeUnmount(() => {
 }
 
 .composer-dropdown-option {
-  @apply flex w-full items-center rounded-lg border-0 bg-transparent px-2 py-1.5 text-left text-sm text-zinc-700 transition hover:bg-zinc-100;
+  @apply flex w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 py-1.5 text-left text-sm text-zinc-700 transition hover:bg-zinc-100;
 }
 
 .composer-dropdown-option.is-selected {

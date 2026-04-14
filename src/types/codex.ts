@@ -4,6 +4,9 @@ export type RpcEnvelope<T> = {
 
 export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
+/** Per-thread composer preset: inherit Codex/thread policy vs unattended full access. */
+export type ThreadPermissionMode = 'default' | 'full-access'
+
 export type RpcMethodCatalog = {
   data: string[]
 }

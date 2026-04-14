@@ -214,6 +214,8 @@
           v-model="threadRenameDraft"
           class="thread-context-menu-input"
           type="text"
+          name="thread-rename-title"
+          autocomplete="off"
           @keydown.escape.prevent="closeThreadMenu"
         />
         <div class="thread-context-menu-actions">
@@ -244,11 +246,14 @@
             </button>
           </template>
           <template v-else>
-            <label class="project-menu-label">Project name</label>
+            <label class="project-menu-label" for="project-display-name-input">Project name</label>
             <input
+              id="project-display-name-input"
               v-model="projectRenameDraft"
               class="project-menu-input"
               type="text"
+              name="project-display-name"
+              autocomplete="off"
               @input="onProjectNameInput(openProjectMenuId)"
             />
           </template>

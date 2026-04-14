@@ -51,6 +51,10 @@ The installed CLI also accepts proxy flags that are passed to `codex app-server`
 - `src/utils/platform.ts`: lightweight platform helpers (e.g. iOS detection for voice copy).
 - `src/components/content/ComposerDropdown.vue`: shared dropdown used by Model/Thinking and New chat project selection.
 - `src/components/sidebar/SidebarThreadTree.vue`: project/thread tree, project context menu, thread context menu, pin/unread/archive/rename actions.
+- `src/components/content/DirectoryPickerOverlay.vue`: modal directory picker for New chat project folder (host-side paths).
+- `src/server/fsDirectories.ts`: `GET /codex-api/fs/directories`, `POST /codex-api/fs/mkdir` (allowed roots + logical paths).
+- `src/api/fsDirectoriesClient.ts`: frontend client for fs endpoints.
+- `src/utils/codexSessionCache.ts`: `localStorage` cache for last-known quota + model list (faster cold load).
 - `src/server/codexAppServerBridge.ts`: Node middleware that starts and proxies `codex app-server`.
 - `src/server/httpServer.ts`: production Express server, auth, static frontend, and bridge middleware.
 - `src/cli/index.ts`: `codex-web-local` CLI entrypoint (default port **3000**, `CODEX_WEB_LOCAL_PASSWORD`, proxy flags).
@@ -75,8 +79,8 @@ The installed CLI also accepts proxy flags that are passed to `codex app-server`
 
 ## Current UI Behavior Notes
 
-- New chat project selection currently uses `ComposerDropdown` with search and an "Add new project" text field.
-- The added project is a cwd string used when the first message creates a new Codex thread.
+- New chat project selection uses `ComposerDropdown` with search; **Add new project** opens a **server-side directory picker** (host paths). Optional **New folder** creates a directory under the current picker path (`POST /codex-api/fs/mkdir`). Manual path entry remains as a fallback.
+- The chosen folder is a cwd string used when the first message creates a new Codex thread.
 - Message file references support backtick paths and Markdown links such as `[App.vue](/abs/path/App.vue)`.
 - File links are displayed as paths relative to the active thread cwd when possible, matching the Codex CLI style more closely than basename-only rendering.
 - The composer uses a textarea. `Enter` submits, `Shift+Enter` inserts a newline, and IME composition Enter is not submitted.
@@ -95,6 +99,9 @@ These are already in the tree; the follow-up plan only lists **remaining** work.
 - **Voice input (phase 1):** Composer microphone uses the browser **Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`) for dictation into the draft. No server-side audio; optional LLM “polish” is a separate future step.
 - **Mobile / notched layouts:** Viewport meta (`viewport-fit`, `interactive-widget`), `dvh` + safe-area padding on the desktop shell and content (`index.html`, `DesktopLayout.vue`, `App.vue`, `style.css`).
 - **Linux systemd (user):** `make systemd` installs `~/.config/systemd/user/codex-web-local.service`, seeds `~/.config/codex-web-local/service.env` once from the commented template, and enables the service. CLI reads **`CODEX_WEB_LOCAL_PASSWORD`** and proxy env from `service.env` when run under systemd.
+- **Remote project folder (fs API):** `GET /codex-api/fs/directories` lists child directories under `CODEX_WEB_PROJECT_ROOTS` (comma-separated) or defaults to `$HOME` + `process.cwd()`; navigation uses **logical paths** so symlinked home/project dirs behave predictably. **`POST /codex-api/fs/mkdir`** creates a single subfolder under an allowed parent (same security rules).
+- **Cold-load resilience:** `localStorage` session cache for sidebar quota + model/thinking defaults; `initialize` RPC is single-flight in the bridge to avoid duplicate `initialize` on parallel first requests; frontend retries transient **502/503** on `/codex-api/rpc`. Reduces “quota unavailable / empty model list” and occasional 502 on first paint when `codex app-server` is still starting.
+- **Install packaging:** `make install` uses `npm pack` + tarball (no fragile symlink to the repo tree).
 
 ## Follow-Up Development Plan
 
@@ -104,46 +111,26 @@ Items are grouped by **priority** (rough order to tackle). Higher tiers deliver 
 
 | Tier | Focus |
 |------|--------|
-| **P1 — Next up** | New-chat project picker + read-only `fs` API (foundation for remote “choose folder”). |
-| **P2 — Soon** | Extend composer beyond **image-only** attachments (if desired); small git/quota UX polish only where gaps appear. |
+| **P1 — Next up** | Composer beyond **image-only** attachments (optional); git/quota UX polish only where gaps appear. |
+| **P2 — Soon** | Incremental directory-picker / fs polish if needed (e.g. UX edge cases, docs). |
 | **P3 — Later** | Message queueing; voice phase 2 (LLM polish) only. |
 | **P4 — Deferred / high complexity** | Optional HTTPS + system notifications; remote terminal. |
 
 ---
 
-### P1 — Server-side directory picker (next major feature)
+### P1 — Composer and observability (next focus)
 
-- Replace the manual New chat "Add new project" text entry with a remote server-side directory picker.
-- The directory picker should browse directories on the machine running `codex-web-local`, not the browser client machine.
-- Implement a shared read-only filesystem middleware that can be mounted in both:
-  - Vite dev server via `vite.config.ts`
-  - Express production server via `src/server/httpServer.ts`
-- Suggested API shape:
-  - `GET /codex-api/fs/directories?path=<absolute-path>`
-  - Return current path, parent path, and child directories.
-  - Return clear errors for missing paths, non-directories, and permission-denied directories.
-- Security constraints:
-  - List directories only; do not expose file contents.
-  - Reuse existing auth in production.
-  - Prefer an allowlist such as `CODEX_WEB_PROJECT_ROOTS=/data/zhangjy/workspace,/home/zhangjy`.
-  - If no allowlist is set, consider a conservative default such as `$HOME` and `process.cwd()`.
-- Frontend picker behavior:
-  - Add a modal or popover from "Add new project".
-  - Show root choices, current path, parent navigation, and child directories.
-  - Include search/filter within the current directory.
-  - Include a manual path field for paste/edit fallback.
-  - "Choose this folder" should set `newThreadCwd` and add the selected cwd to the New chat project options for the current session.
+- **Composer — beyond images (optional product decision):** Today the composer supports **images** only (`ThreadComposer.vue`: file picker + paste). If needed, extend to non-image files (Codex attachments vs temp server path vs paste-as-text), without breaking existing image behavior.
+- **Git / quota — polish only:** Core git header and sidebar quota meters are shipped (see **Recently shipped**). Follow-ups only if a concrete gap appears (e.g. richer diff stats, copy branch name).
 
-**Rationale:** Matches the product goal (remote browser + correct host paths). Other features do not depend on it except indirectly (better onboarding).
+**Rationale:** Directory picker + fs API are shipped; remaining high-value product work here is optional non-image attachments and small polish.
 
 ---
 
-### P2 — Composer and observability (remaining)
+### P2 — Directory picker / fs (incremental)
 
-- **Composer — beyond images (optional product decision):** Today the composer supports **images** only (`ThreadComposer.vue`: file picker + paste). If needed, extend to non-image files (Codex attachments vs temp server path vs paste-as-text), without breaking existing image behavior.
-- **Git / quota — polish only:** Core git header and sidebar quota meters are shipped (see **Recently shipped**). File follow-ups only if a concrete gap appears (e.g. richer diff stats, copy branch name).
-
-**Rationale:** P2 is now mostly incremental; main greenfield item is optional non-image attachment behavior.
+- Only if users report gaps: e.g. clearer errors, keyboard shortcuts, remember last browsed path across sessions, or documentation tweaks for `CODEX_WEB_PROJECT_ROOTS`.
+- Avoid expanding server fs scope (file reads, writes beyond `mkdir`) unless product explicitly requires it.
 
 ---
 
@@ -168,7 +155,7 @@ Items are grouped by **priority** (rough order to tackle). Higher tiers deliver 
 
 **Goal:** Enable **Web Notifications** for pending approvals when the tab is in the background. Browsers require a **secure context** (`https://` or `http://localhost` / `127.0.0.1`); plain `http://` to a LAN or Tailscale IP is often **not** sufficient.
 
-**Planned steps (implement after P1/P2 unless reprioritized):**
+**Planned steps (implement after composer/fs polish unless reprioritized):**
 
 1. **TLS for the app server (Express + Vite dev)**
    - Configurable PEM paths (env or CLI), e.g. `CODEX_WEB_TLS_CERT` / `CODEX_WEB_TLS_KEY`.
@@ -179,7 +166,7 @@ Items are grouped by **priority** (rough order to tackle). Higher tiers deliver 
    - User preference + `Notification.requestPermission()` (clear opt-in).
    - When `pendingApprovalRequests` grows and the document is hidden or unfocused, fire a deduplicated `Notification` (e.g. `tag`); click focuses the window; approval still happens in-app.
 
-**Rationale:** Cross-cuts CLI, server, docs, and browser policy; lower priority than the directory picker and composer improvements unless remote approval pain dominates.
+**Rationale:** Cross-cuts CLI, server, docs, and browser policy; lower priority than composer attachment work and core UX unless remote approval pain dominates.
 
 ---
 

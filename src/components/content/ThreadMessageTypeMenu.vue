@@ -12,10 +12,12 @@
 
       <p v-if="types.length === 0" class="thread-type-menu-empty">No types yet</p>
 
-      <label v-for="type in types" :key="type" class="thread-type-menu-option">
+      <label v-for="(type, typeIdx) in types" :key="type" class="thread-type-menu-option" :for="`${baseFieldId}-${typeIdx}`">
         <input
+          :id="`${baseFieldId}-${typeIdx}`"
           class="thread-type-menu-checkbox"
           type="checkbox"
+          :name="`thread-msg-type-visible-${typeIdx}`"
           :checked="hiddenByType[type] !== true"
           @change="onCheckboxChange(type)"
         />
@@ -27,7 +29,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { onBeforeUnmount, ref, useId } from 'vue'
 import IconTablerSettings from '../icons/IconTablerSettings.vue'
 
 defineProps<{
@@ -35,6 +37,8 @@ defineProps<{
   hiddenByType: Record<string, boolean>
   countByType: Record<string, number>
 }>()
+
+const baseFieldId = useId()
 
 const emit = defineEmits<{
   toggle: [type: string]

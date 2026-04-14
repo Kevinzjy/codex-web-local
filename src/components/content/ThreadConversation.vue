@@ -52,8 +52,11 @@
                   <p class="request-question-title">{{ question.header || question.question }}</p>
                   <p v-if="question.header && question.question" class="request-question-text">{{ question.question }}</p>
                   <select
+                    :id="`tool-request-${request.id}-${question.id}-answer`"
                     class="request-select"
+                    :name="`tool-request-${request.id}-${question.id}-answer`"
                     :value="readQuestionAnswer(request.id, question.id, question.options[0] || '')"
+                    autocomplete="off"
                     @change="onQuestionAnswerChange(request.id, question.id, $event)"
                   >
                     <option v-for="option in question.options" :key="`${request.id}:${question.id}:${option}`" :value="option">
@@ -62,10 +65,13 @@
                   </select>
                   <input
                     v-if="question.isOther"
+                    :id="`tool-request-${request.id}-${question.id}-other`"
                     class="request-input"
                     type="text"
+                    :name="`tool-request-${request.id}-${question.id}-other`"
                     :value="readQuestionOtherAnswer(request.id, question.id)"
                     placeholder="Other answer"
+                    autocomplete="off"
                     @input="onQuestionOtherAnswerInput(request.id, question.id, $event)"
                   />
                 </div>

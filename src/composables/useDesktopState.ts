@@ -23,8 +23,14 @@ import type {
   GetAccountRateLimitsResponse,
   RateLimitSnapshot,
 } from '../api/appServerDtos'
+import {
+  loadCodexSessionCache,
+  mergeCodexSessionCache,
+  persistModelPrefsFromState,
+} from '../utils/codexSessionCache'
 import type {
   ReasoningEffort,
+  ThreadPermissionMode,
   ThreadScrollState,
   UiComposerDraft,
   UiGitStatus,
@@ -77,6 +83,29 @@ const GIT_STATUS_MIN_GAP_MS = 2000
 const CHAT_STATE_SYNC_DEBOUNCE_MS = 450
 const REASONING_EFFORT_OPTIONS: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
 const GLOBAL_SERVER_REQUEST_SCOPE = '__global__'
+const INITIAL_CODEX_FETCH_ATTEMPTS = 4
+const INITIAL_CODEX_FETCH_BASE_DELAY_MS = 400
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+async function retryCodexFetch<T>(operation: () => Promise<T>): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < INITIAL_CODEX_FETCH_ATTEMPTS; attempt++) {
+    try {
+      return await operation()
+    } catch (error) {
+      lastError = error
+      if (attempt < INITIAL_CODEX_FETCH_ATTEMPTS - 1) {
+        await sleepMs(INITIAL_CODEX_FETCH_BASE_DELAY_MS * (attempt + 1))
+      }
+    }
+  }
+  throw lastError
+}
 
 function loadReadStateMap(): Record<string, string> {
   if (typeof window === 'undefined') return {}
@@ -286,13 +315,19 @@ function serializeDesktopChatSlice(
   order: string[],
   display: Record<string, string>,
   unread: Record<string, boolean>,
+  permissionModes: Record<string, ThreadPermissionMode>,
+  fullAccessAck: Record<string, boolean>,
 ): string {
   return JSON.stringify({
     projectOrder: order,
     projectDisplayNames: display,
     manualUnreadByThreadId: unread,
+    threadPermissionModeByThreadId: permissionModes,
+    threadFullAccessAcknowledgedByThreadId: fullAccessAck,
   })
 }
+
+const EMPTY_DESKTOP_CHAT_SLICE = serializeDesktopChatSlice([], {}, {}, {}, {})
 
 function mergeProjectOrder(previousOrder: string[], incomingGroups: UiProjectGroup[]): string[] {
   const nextOrder = [...previousOrder]
@@ -662,6 +697,10 @@ export function useDesktopState() {
   const projectDisplayNameById = ref<Record<string, string>>(loadProjectDisplayNames())
   const threadDisplayNameById = ref<Record<string, string>>(loadStringRecord(THREAD_DISPLAY_NAME_STORAGE_KEY))
   const manualUnreadByThreadId = ref<Record<string, boolean>>(loadBooleanRecord(MANUAL_UNREAD_STORAGE_KEY))
+  const threadPermissionModeByThreadId = ref<Record<string, ThreadPermissionMode>>({})
+  const threadFullAccessAcknowledgedByThreadId = ref<Record<string, boolean>>({})
+  const fullAccessRiskModalOpen = ref(false)
+  const pendingDraftForFullAccessAck = ref<UiComposerDraft | null>(null)
   const loadedVersionByThreadId = ref<Record<string, string>>({})
   const loadedMessagesByThreadId = ref<Record<string, boolean>>({})
   const resumedThreadById = ref<Record<string, boolean>>({})
@@ -676,6 +715,29 @@ export function useDesktopState() {
   const isSendingMessage = ref(false)
   const isInterruptingTurn = ref(false)
   const isLoadingRateLimits = ref(false)
+  {
+    const cached = loadCodexSessionCache()
+    if (cached) {
+      if (cached.rateLimits) {
+        accountRateLimits.value = cached.rateLimits
+      }
+      if (cached.modelIds.length > 0) {
+        availableModelIds.value = cached.modelIds
+        const preferred = cached.selectedModelId.trim()
+        if (preferred && cached.modelIds.includes(preferred)) {
+          selectedModelId.value = preferred
+        } else {
+          selectedModelId.value = cached.modelIds[0]
+        }
+      }
+      const effortRaw = cached.selectedReasoningEffort
+      if (effortRaw === '') {
+        selectedReasoningEffort.value = 'medium'
+      } else if (REASONING_EFFORT_OPTIONS.includes(effortRaw as ReasoningEffort)) {
+        selectedReasoningEffort.value = effortRaw as ReasoningEffort
+      }
+    }
+  }
   const error = ref('')
   const isPolling = ref(false)
   const hasLoadedThreads = ref(false)
@@ -767,14 +829,23 @@ export function useDesktopState() {
   }
 
   function setSelectedModelId(modelId: string): void {
-    selectedModelId.value = modelId.trim()
+    const next = modelId.trim()
+    if (selectedModelId.value === next) return
+    selectedModelId.value = next
+    if (availableModelIds.value.length > 0) {
+      persistModelPrefsFromState(availableModelIds.value, next, selectedReasoningEffort.value)
+    }
   }
 
   function setSelectedReasoningEffort(effort: ReasoningEffort | ''): void {
     if (effort && !REASONING_EFFORT_OPTIONS.includes(effort)) {
       return
     }
+    if (selectedReasoningEffort.value === effort) return
     selectedReasoningEffort.value = effort
+    if (availableModelIds.value.length > 0) {
+      persistModelPrefsFromState(availableModelIds.value, selectedModelId.value, effort)
+    }
   }
 
   function buildPendingTurnDetails(modelId: string, effort: ReasoningEffort | ''): string[] {
@@ -785,10 +856,9 @@ export function useDesktopState() {
 
   async function refreshModelPreferences(): Promise<void> {
     try {
-      const [modelIds, currentConfig] = await Promise.all([
-        getAvailableModelIds(),
-        getCurrentModelConfig(),
-      ])
+      const [modelIds, currentConfig] = await retryCodexFetch(() =>
+        Promise.all([getAvailableModelIds(), getCurrentModelConfig()]),
+      )
 
       availableModelIds.value = modelIds
 
@@ -808,6 +878,10 @@ export function useDesktopState() {
         REASONING_EFFORT_OPTIONS.includes(currentConfig.reasoningEffort)
       ) {
         selectedReasoningEffort.value = currentConfig.reasoningEffort
+      }
+
+      if (modelIds.length > 0) {
+        persistModelPrefsFromState(modelIds, selectedModelId.value, selectedReasoningEffort.value)
       }
     } catch {
       // Keep chat UI usable even if model metadata is temporarily unavailable.
@@ -934,6 +1008,14 @@ export function useDesktopState() {
     if (nextManualUnread !== manualUnreadByThreadId.value) {
       manualUnreadByThreadId.value = nextManualUnread
       saveBooleanRecord(MANUAL_UNREAD_STORAGE_KEY, nextManualUnread)
+    }
+    const nextPerm = pruneThreadStateMap(threadPermissionModeByThreadId.value, activeThreadIds)
+    if (nextPerm !== threadPermissionModeByThreadId.value) {
+      threadPermissionModeByThreadId.value = nextPerm
+    }
+    const nextFaAck = pruneThreadStateMap(threadFullAccessAcknowledgedByThreadId.value, activeThreadIds)
+    if (nextFaAck !== threadFullAccessAcknowledgedByThreadId.value) {
+      threadFullAccessAcknowledgedByThreadId.value = nextFaAck
     }
     const nextThreadNames = pruneThreadStateMap(threadDisplayNameById.value, activeThreadIds)
     if (nextThreadNames !== threadDisplayNameById.value) {
@@ -1600,6 +1682,7 @@ export function useDesktopState() {
     if (nextRateLimits) {
       accountRateLimits.value = nextRateLimits
       accountRateLimitsError.value = ''
+      mergeCodexSessionCache({ rateLimits: nextRateLimits })
       return
     }
 
@@ -1803,13 +1886,24 @@ export function useDesktopState() {
 
   async function refreshAccountRateLimits(): Promise<void> {
     isLoadingRateLimits.value = true
-    accountRateLimitsError.value = ''
+    const hadCachedSnapshot = accountRateLimits.value !== null
+    if (!hadCachedSnapshot) {
+      accountRateLimitsError.value = ''
+    }
 
     try {
-      const payload = await getAccountRateLimits()
-      accountRateLimits.value = selectAccountRateLimitSnapshot(payload)
+      const payload = await retryCodexFetch(() => getAccountRateLimits())
+      const snapshot = selectAccountRateLimitSnapshot(payload)
+      accountRateLimits.value = snapshot
+      accountRateLimitsError.value = ''
+      if (snapshot) {
+        mergeCodexSessionCache({ rateLimits: snapshot })
+      }
     } catch (unknownError) {
-      accountRateLimitsError.value = unknownError instanceof Error ? unknownError.message : 'Failed to load quota'
+      if (!accountRateLimits.value) {
+        accountRateLimitsError.value =
+          unknownError instanceof Error ? unknownError.message : 'Failed to load quota'
+      }
     } finally {
       isLoadingRateLimits.value = false
     }
@@ -1909,6 +2003,16 @@ export function useDesktopState() {
     const nextDraft = normalizeComposerDraft(draft)
     if (!threadId || isComposerDraftEmpty(nextDraft)) return
 
+    const perm = threadPermissionModeByThreadId.value[threadId] ?? 'default'
+    if (
+      perm === 'full-access' &&
+      threadFullAccessAcknowledgedByThreadId.value[threadId] !== true
+    ) {
+      pendingDraftForFullAccessAck.value = nextDraft
+      fullAccessRiskModalOpen.value = true
+      return
+    }
+
     isSendingMessage.value = true
     error.value = ''
     shouldAutoScrollOnNextAgentEvent = true
@@ -1997,11 +2101,13 @@ export function useDesktopState() {
         await resumeThread(threadId)
       }
 
+      const perm = threadPermissionModeByThreadId.value[threadId] ?? 'default'
       await startThreadTurn(
         threadId,
         draft,
         modelId || undefined,
         reasoningEffort || undefined,
+        perm === 'full-access' ? 'full-access' : undefined,
       )
 
       resumedThreadById.value = {
@@ -2364,6 +2470,8 @@ export function useDesktopState() {
       projectOrder.value,
       projectDisplayNameById.value,
       manualUnreadByThreadId.value,
+      threadPermissionModeByThreadId.value,
+      threadFullAccessAcknowledgedByThreadId.value,
     )
     if (snapshot === lastPushedDesktopChatState) return
     try {
@@ -2371,11 +2479,15 @@ export function useDesktopState() {
         projectOrder: [...projectOrder.value],
         projectDisplayNames: { ...projectDisplayNameById.value },
         manualUnreadByThreadId: { ...manualUnreadByThreadId.value },
+        threadPermissionModeByThreadId: { ...threadPermissionModeByThreadId.value },
+        threadFullAccessAcknowledgedByThreadId: { ...threadFullAccessAcknowledgedByThreadId.value },
       })
       lastPushedDesktopChatState = serializeDesktopChatSlice(
         saved.projectOrder,
         saved.projectDisplayNames,
         saved.manualUnreadByThreadId,
+        saved.threadPermissionModeByThreadId,
+        saved.threadFullAccessAcknowledgedByThreadId,
       )
     } catch {
       // Keep local state when the bridge is unavailable.
@@ -2390,12 +2502,16 @@ export function useDesktopState() {
       const hasDesktopRemote =
         remote.projectOrder.length > 0 ||
         Object.keys(remote.projectDisplayNames).length > 0 ||
-        Object.keys(remote.manualUnreadByThreadId).length > 0
+        Object.keys(remote.manualUnreadByThreadId).length > 0 ||
+        Object.keys(remote.threadPermissionModeByThreadId).length > 0 ||
+        Object.keys(remote.threadFullAccessAcknowledgedByThreadId).length > 0
 
       if (hasDesktopRemote) {
         projectOrder.value = [...remote.projectOrder]
         projectDisplayNameById.value = { ...remote.projectDisplayNames }
         manualUnreadByThreadId.value = { ...remote.manualUnreadByThreadId }
+        threadPermissionModeByThreadId.value = { ...remote.threadPermissionModeByThreadId }
+        threadFullAccessAcknowledgedByThreadId.value = { ...remote.threadFullAccessAcknowledgedByThreadId }
         saveProjectOrder(projectOrder.value)
         saveProjectDisplayNames(projectDisplayNameById.value)
         saveBooleanRecord(MANUAL_UNREAD_STORAGE_KEY, manualUnreadByThreadId.value)
@@ -2404,6 +2520,8 @@ export function useDesktopState() {
           projectOrder.value,
           projectDisplayNameById.value,
           manualUnreadByThreadId.value,
+          threadPermissionModeByThreadId.value,
+          threadFullAccessAcknowledgedByThreadId.value,
         )
         return
       }
@@ -2412,8 +2530,10 @@ export function useDesktopState() {
         projectOrder.value,
         projectDisplayNameById.value,
         manualUnreadByThreadId.value,
+        threadPermissionModeByThreadId.value,
+        threadFullAccessAcknowledgedByThreadId.value,
       )
-      if (localSnapshot === serializeDesktopChatSlice([], {}, {})) {
+      if (localSnapshot === EMPTY_DESKTOP_CHAT_SLICE) {
         lastPushedDesktopChatState = localSnapshot
         return
       }
@@ -2422,17 +2542,23 @@ export function useDesktopState() {
         projectOrder: [...projectOrder.value],
         projectDisplayNames: { ...projectDisplayNameById.value },
         manualUnreadByThreadId: { ...manualUnreadByThreadId.value },
+        threadPermissionModeByThreadId: { ...threadPermissionModeByThreadId.value },
+        threadFullAccessAcknowledgedByThreadId: { ...threadFullAccessAcknowledgedByThreadId.value },
       })
       lastPushedDesktopChatState = serializeDesktopChatSlice(
         saved.projectOrder,
         saved.projectDisplayNames,
         saved.manualUnreadByThreadId,
+        saved.threadPermissionModeByThreadId,
+        saved.threadFullAccessAcknowledgedByThreadId,
       )
     } catch {
       lastPushedDesktopChatState = serializeDesktopChatSlice(
         projectOrder.value,
         projectDisplayNameById.value,
         manualUnreadByThreadId.value,
+        threadPermissionModeByThreadId.value,
+        threadFullAccessAcknowledgedByThreadId.value,
       )
     } finally {
       isApplyingRemoteDesktopChatState.value = false
@@ -2440,13 +2566,59 @@ export function useDesktopState() {
   })
 
   watch(
-    [projectOrder, projectDisplayNameById, manualUnreadByThreadId],
+    [
+      projectOrder,
+      projectDisplayNameById,
+      manualUnreadByThreadId,
+      threadPermissionModeByThreadId,
+      threadFullAccessAcknowledgedByThreadId,
+    ],
     () => {
       if (isApplyingRemoteDesktopChatState.value) return
       schedulePushDesktopChatState()
     },
     { deep: true },
   )
+
+  const selectedThreadPermissionMode = computed<ThreadPermissionMode>(() => {
+    const id = selectedThreadId.value.trim()
+    if (!id) return 'default'
+    return threadPermissionModeByThreadId.value[id] ?? 'default'
+  })
+
+  function setThreadPermissionMode(threadId: string, mode: ThreadPermissionMode): void {
+    const id = threadId.trim()
+    if (!id) return
+    const next = { ...threadPermissionModeByThreadId.value }
+    if (mode === 'default') {
+      delete next[id]
+    } else {
+      next[id] = 'full-access'
+    }
+    threadPermissionModeByThreadId.value = next
+  }
+
+  function confirmFullAccessRiskAndSend(): void {
+    const threadId = selectedThreadId.value.trim()
+    const draft = pendingDraftForFullAccessAck.value
+    if (!threadId || !draft) {
+      fullAccessRiskModalOpen.value = false
+      pendingDraftForFullAccessAck.value = null
+      return
+    }
+    threadFullAccessAcknowledgedByThreadId.value = {
+      ...threadFullAccessAcknowledgedByThreadId.value,
+      [threadId]: true,
+    }
+    fullAccessRiskModalOpen.value = false
+    pendingDraftForFullAccessAck.value = null
+    void sendMessageToSelectedThread(draft)
+  }
+
+  function cancelFullAccessRiskModal(): void {
+    fullAccessRiskModalOpen.value = false
+    pendingDraftForFullAccessAck.value = null
+  }
 
   return {
     projectGroups,
@@ -2483,6 +2655,11 @@ export function useDesktopState() {
     interruptSelectedThreadTurn,
     setSelectedModelId,
     setSelectedReasoningEffort,
+    selectedThreadPermissionMode,
+    setThreadPermissionMode,
+    fullAccessRiskModalOpen,
+    confirmFullAccessRiskAndSend,
+    cancelFullAccessRiskModal,
     respondToPendingServerRequest,
     renameProject,
     renameThreadById,

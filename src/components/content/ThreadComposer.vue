@@ -16,12 +16,15 @@
       </ul>
 
       <textarea
+        id="thread-composer-message"
         v-model="draft"
         class="thread-composer-input"
+        name="message"
         rows="1"
         :placeholder="placeholderText"
         :disabled="disabled || !activeThreadId || isTurnInProgress"
         :readonly="isSpeechListening"
+        autocomplete="off"
         @keydown="onInputKeydown"
         @compositionstart="onCompositionStart"
         @compositionend="onCompositionEnd"
@@ -46,9 +49,11 @@
       <p v-if="speechError" class="thread-composer-speech-error" role="status">{{ speechError }}</p>
 
       <input
+        id="thread-composer-image-files"
         ref="imageInputRef"
         class="thread-composer-file-input"
         type="file"
+        name="images"
         accept="image/png,image/jpeg,image/webp,image/gif"
         multiple
         @change="onImageInputChange"
@@ -84,6 +89,17 @@
           open-direction="up"
           :disabled="disabled || !activeThreadId || isTurnInProgress"
           @update:model-value="onReasoningEffortSelect"
+        />
+
+        <ComposerDropdown
+          v-if="showPermissionMode"
+          class="thread-composer-control thread-composer-permission"
+          :model-value="permissionMode"
+          :options="permissionOptions"
+          placeholder="Permissions"
+          open-direction="up"
+          :disabled="disabled || !activeThreadId || isTurnInProgress"
+          @update:model-value="onPermissionModeSelect"
         />
 
         <span
@@ -140,7 +156,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { ReasoningEffort, UiComposerDraft, UiComposerImage } from '../../types/codex'
+import type { ReasoningEffort, ThreadPermissionMode, UiComposerDraft, UiComposerImage } from '../../types/codex'
 import { useWebSpeechRecognition } from '../../composables/useWebSpeechRecognition'
 import { isLikelyIOS } from '../../utils/platform'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
@@ -153,22 +169,31 @@ const MAX_IMAGE_COUNT = 8
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
 
-const props = defineProps<{
-  activeThreadId: string
-  models: string[]
-  selectedModel: string
-  selectedReasoningEffort: ReasoningEffort | ''
-  contextUsagePercent?: number | null
-  isTurnInProgress?: boolean
-  isInterruptingTurn?: boolean
-  disabled?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    activeThreadId: string
+    models: string[]
+    selectedModel: string
+    selectedReasoningEffort: ReasoningEffort | ''
+    permissionMode?: ThreadPermissionMode
+    showPermissionMode?: boolean
+    contextUsagePercent?: number | null
+    isTurnInProgress?: boolean
+    isInterruptingTurn?: boolean
+    disabled?: boolean
+  }>(),
+  {
+    permissionMode: 'default',
+    showPermissionMode: false,
+  },
+)
 
 const emit = defineEmits<{
   submit: [draft: UiComposerDraft]
   interrupt: []
   'update:selected-model': [modelId: string]
   'update:selected-reasoning-effort': [effort: ReasoningEffort | '']
+  'update:permission-mode': [mode: ThreadPermissionMode]
 }>()
 
 const draft = ref('')
@@ -188,6 +213,15 @@ const reasoningOptions: Array<{ value: ReasoningEffort; label: string }> = [
 const modelOptions = computed(() =>
   props.models.map((modelId) => ({ value: modelId, label: modelId })),
 )
+
+const permissionOptions: Array<{
+  value: ThreadPermissionMode
+  label: string
+  decoration: 'permission-default' | 'permission-full'
+}> = [
+  { value: 'default', label: 'Default', decoration: 'permission-default' },
+  { value: 'full-access', label: 'Full access', decoration: 'permission-full' },
+]
 
 const canSubmit = computed(() => {
   if (props.disabled) return false
@@ -403,6 +437,12 @@ function onReasoningEffortSelect(value: string): void {
   emit('update:selected-reasoning-effort', value as ReasoningEffort)
 }
 
+function onPermissionModeSelect(value: string): void {
+  if (value === 'default' || value === 'full-access') {
+    emit('update:permission-mode', value)
+  }
+}
+
 watch(
   () => props.activeThreadId,
   () => {
@@ -520,6 +560,10 @@ watch(
 
 .thread-composer-control {
   @apply shrink-0;
+}
+
+.thread-composer-permission {
+  @apply max-w-[11rem] min-w-0;
 }
 
 .thread-composer-context-usage {

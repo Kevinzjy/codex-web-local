@@ -23,6 +23,7 @@ import type {
 import { normalizeCodexApiError } from './codexErrors'
 import { normalizeThreadGroupsV2, normalizeThreadMessagesV2 } from './normalizers/v2'
 import type {
+  ThreadPermissionMode,
   UiComposerDraft,
   UiGitStatus,
   UiMessage,
@@ -170,6 +171,7 @@ export async function startThreadTurn(
   draft: UiComposerDraft,
   model?: string,
   effort?: ReasoningEffort,
+  permissionMode?: ThreadPermissionMode,
 ): Promise<void> {
   try {
     const text = draft.text.trim()
@@ -193,6 +195,10 @@ export async function startThreadTurn(
     }
     if (typeof effort === 'string' && effort.length > 0) {
       params.effort = effort
+    }
+    if (permissionMode === 'full-access') {
+      params.approvalPolicy = 'never'
+      params.sandboxPolicy = { type: 'danger-full-access' }
     }
     await callRpc('turn/start', params)
   } catch (error) {

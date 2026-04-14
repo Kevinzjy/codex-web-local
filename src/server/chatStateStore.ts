@@ -2,6 +2,8 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+type ThreadPermissionMode = 'default' | 'full-access'
+
 type ChatStateDocument = {
   version: 1
   updatedAtIso: string
@@ -10,6 +12,8 @@ type ChatStateDocument = {
   projectOrder: string[]
   projectDisplayNames: Record<string, string>
   manualUnreadByThreadId: Record<string, boolean>
+  threadPermissionModeByThreadId: Record<string, ThreadPermissionMode>
+  threadFullAccessAcknowledgedByThreadId: Record<string, boolean>
 }
 
 export type ChatStatePayload = {
@@ -18,13 +22,21 @@ export type ChatStatePayload = {
   projectOrder: string[]
   projectDisplayNames: Record<string, string>
   manualUnreadByThreadId: Record<string, boolean>
+  threadPermissionModeByThreadId: Record<string, ThreadPermissionMode>
+  threadFullAccessAcknowledgedByThreadId: Record<string, boolean>
   updatedAtIso: string
 }
 
 export type ChatStatePatch = Partial<
   Pick<
     ChatStateDocument,
-    'pinnedThreadIds' | 'collapsedProjects' | 'projectOrder' | 'projectDisplayNames' | 'manualUnreadByThreadId'
+    | 'pinnedThreadIds'
+    | 'collapsedProjects'
+    | 'projectOrder'
+    | 'projectDisplayNames'
+    | 'manualUnreadByThreadId'
+    | 'threadPermissionModeByThreadId'
+    | 'threadFullAccessAcknowledgedByThreadId'
   >
 >
 
@@ -103,6 +115,32 @@ function normalizeManualUnread(value: unknown): Record<string, boolean> {
   return record
 }
 
+function normalizeThreadPermissionModes(value: unknown): Record<string, ThreadPermissionMode> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+
+  const record: Record<string, ThreadPermissionMode> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (raw === 'default' || raw === 'full-access') {
+      record[key] = raw
+    }
+  }
+  return record
+}
+
+function normalizeThreadFullAccessAck(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+
+  const record: Record<string, boolean> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (raw === true) {
+      record[key] = true
+    }
+  }
+  return record
+}
+
 function toPayload(doc: ChatStateDocument): ChatStatePayload {
   return {
     pinnedThreadIds: [...doc.pinnedThreadIds],
@@ -110,6 +148,8 @@ function toPayload(doc: ChatStateDocument): ChatStatePayload {
     projectOrder: [...doc.projectOrder],
     projectDisplayNames: { ...doc.projectDisplayNames },
     manualUnreadByThreadId: { ...doc.manualUnreadByThreadId },
+    threadPermissionModeByThreadId: { ...doc.threadPermissionModeByThreadId },
+    threadFullAccessAcknowledgedByThreadId: { ...doc.threadFullAccessAcknowledgedByThreadId },
     updatedAtIso: doc.updatedAtIso,
   }
 }
@@ -123,6 +163,8 @@ function createDefaultDocument(): ChatStateDocument {
     projectOrder: [],
     projectDisplayNames: {},
     manualUnreadByThreadId: {},
+    threadPermissionModeByThreadId: {},
+    threadFullAccessAcknowledgedByThreadId: {},
   }
 }
 
@@ -134,8 +176,9 @@ async function readDocument(path: string): Promise<ChatStateDocument> {
       return createDefaultDocument()
     }
     const record = parsed as Record<string, unknown>
+    const base = createDefaultDocument()
     return {
-      version: CHAT_STATE_VERSION,
+      ...base,
       updatedAtIso:
         typeof record.updatedAtIso === 'string' && record.updatedAtIso.trim().length > 0
           ? record.updatedAtIso
@@ -145,6 +188,8 @@ async function readDocument(path: string): Promise<ChatStateDocument> {
       projectOrder: normalizeProjectOrder(record.projectOrder),
       projectDisplayNames: normalizeProjectDisplayNames(record.projectDisplayNames),
       manualUnreadByThreadId: normalizeManualUnread(record.manualUnreadByThreadId),
+      threadPermissionModeByThreadId: normalizeThreadPermissionModes(record.threadPermissionModeByThreadId),
+      threadFullAccessAcknowledgedByThreadId: normalizeThreadFullAccessAck(record.threadFullAccessAcknowledgedByThreadId),
     }
   } catch {
     return createDefaultDocument()
@@ -169,7 +214,9 @@ function isSameChatStateData(first: ChatStateDocument, second: ChatStateDocument
     JSON.stringify(a.collapsedProjects) === JSON.stringify(b.collapsedProjects) &&
     JSON.stringify(a.projectOrder) === JSON.stringify(b.projectOrder) &&
     JSON.stringify(a.projectDisplayNames) === JSON.stringify(b.projectDisplayNames) &&
-    JSON.stringify(a.manualUnreadByThreadId) === JSON.stringify(b.manualUnreadByThreadId)
+    JSON.stringify(a.manualUnreadByThreadId) === JSON.stringify(b.manualUnreadByThreadId) &&
+    JSON.stringify(a.threadPermissionModeByThreadId) === JSON.stringify(b.threadPermissionModeByThreadId) &&
+    JSON.stringify(a.threadFullAccessAcknowledgedByThreadId) === JSON.stringify(b.threadFullAccessAcknowledgedByThreadId)
   )
 }
 
@@ -216,6 +263,12 @@ export class ChatStateStore {
     }
     if (patch.manualUnreadByThreadId !== undefined) {
       next.manualUnreadByThreadId = normalizeManualUnread(patch.manualUnreadByThreadId)
+    }
+    if (patch.threadPermissionModeByThreadId !== undefined) {
+      next.threadPermissionModeByThreadId = normalizeThreadPermissionModes(patch.threadPermissionModeByThreadId)
+    }
+    if (patch.threadFullAccessAcknowledgedByThreadId !== undefined) {
+      next.threadFullAccessAcknowledgedByThreadId = normalizeThreadFullAccessAck(patch.threadFullAccessAcknowledgedByThreadId)
     }
 
     if (isSameChatStateData(current, next)) {

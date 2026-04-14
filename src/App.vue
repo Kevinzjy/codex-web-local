@@ -39,11 +39,14 @@
         <div v-if="!isSidebarCollapsed && isSidebarSearchVisible" class="sidebar-search-bar">
           <IconTablerSearch class="sidebar-search-bar-icon" />
           <input
+            id="codex-sidebar-thread-filter"
             ref="sidebarSearchInputRef"
             v-model="sidebarSearchQuery"
             class="sidebar-search-input"
-            type="text"
+            type="search"
+            name="codex-sidebar-thread-filter"
             placeholder="Filter threads..."
+            autocomplete="off"
             @keydown="onSidebarSearchKeydown"
           />
           <button
@@ -121,18 +124,29 @@
             <div class="content-grid">
               <div class="new-thread-empty">
                 <p class="new-thread-hero">Let's build</p>
-                <ComposerDropdown class="new-thread-folder-dropdown" :model-value="newThreadCwd"
-                  :options="newThreadFolderOptions" placeholder="Choose folder"
-                  searchable search-placeholder="Search projects"
-                  add-option-label="Add new project" add-option-placeholder="Project path"
-                  @update:model-value="onSelectNewThreadFolder" @add-option="onAddNewThreadProject" />
+                <ComposerDropdown
+                  class="new-thread-folder-dropdown"
+                  :model-value="newThreadCwd"
+                  :options="newThreadFolderOptions"
+                  placeholder="Choose folder"
+                  searchable
+                  search-placeholder="Search projects"
+                  add-option-label="Add new project"
+                  add-option-placeholder="Project path"
+                  directory-picker
+                  @update:model-value="onSelectNewThreadFolder"
+                  @add-option="onAddNewThreadProject"
+                  @request-directory-picker="newThreadDirectoryPickerOpen = true"
+                />
               </div>
 
               <ThreadComposer :active-thread-id="composerThreadContextId" :disabled="isSendingMessage"
                 :models="availableModelIds" :selected-model="selectedModelId"
                 :selected-reasoning-effort="selectedReasoningEffort" :is-turn-in-progress="false"
                 :context-usage-percent="null"
-                :is-interrupting-turn="false" @submit="onSubmitThreadMessage"
+                :is-interrupting-turn="false"
+                :show-permission-mode="false"
+                @submit="onSubmitThreadMessage"
                 @update:selected-model="onSelectModel" @update:selected-reasoning-effort="onSelectReasoningEffort" />
             </div>
           </template>
@@ -151,10 +165,14 @@
               <ThreadComposer :active-thread-id="composerThreadContextId"
                 :disabled="isSendingMessage || isLoadingMessages" :models="availableModelIds"
                 :selected-model="selectedModelId" :selected-reasoning-effort="selectedReasoningEffort"
+                :permission-mode="selectedThreadPermissionMode"
+                :show-permission-mode="true"
                 :context-usage-percent="selectedContextUsagePercent"
                 :is-turn-in-progress="isSelectedThreadInProgress" :is-interrupting-turn="isInterruptingTurn"
                 @submit="onSubmitThreadMessage" @update:selected-model="onSelectModel"
-                @update:selected-reasoning-effort="onSelectReasoningEffort" @interrupt="onInterruptTurn" />
+                @update:selected-reasoning-effort="onSelectReasoningEffort"
+                @update:permission-mode="onPermissionMode"
+                @interrupt="onInterruptTurn" />
             </div>
           </template>
         </section>
@@ -166,6 +184,20 @@
       </section>
     </template>
   </DesktopLayout>
+
+  <DirectoryPickerOverlay
+    :open="newThreadDirectoryPickerOpen"
+    :theme="themeName"
+    @close="newThreadDirectoryPickerOpen = false"
+    @confirm="onConfirmNewThreadDirectory"
+  />
+
+  <FullAccessRiskModal
+    :open="fullAccessRiskModalOpen"
+    :theme="themeName"
+    @confirm="confirmFullAccessRiskAndSend"
+    @cancel="cancelFullAccessRiskModal"
+  />
 </template>
 
 <script setup lang="ts">
@@ -178,6 +210,8 @@ import ThreadConversation from './components/content/ThreadConversation.vue'
 import ThreadComposer from './components/content/ThreadComposer.vue'
 import ApprovalRequestsPanel from './components/content/ApprovalRequestsPanel.vue'
 import ComposerDropdown from './components/content/ComposerDropdown.vue'
+import DirectoryPickerOverlay from './components/content/DirectoryPickerOverlay.vue'
+import FullAccessRiskModal from './components/content/FullAccessRiskModal.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
 import SidebarRateLimitMeters from './components/sidebar/SidebarRateLimitMeters.vue'
 import GitStatusIndicator from './components/content/GitStatusIndicator.vue'
@@ -188,6 +222,7 @@ import IconTablerX from './components/icons/IconTablerX.vue'
 import { useDesktopState } from './composables/useDesktopState'
 import type {
   ReasoningEffort,
+  ThreadPermissionMode,
   ThreadScrollState,
   UiComposerDraft,
   UiServerRequest,
@@ -240,6 +275,11 @@ const {
   interruptSelectedThreadTurn,
   setSelectedModelId,
   setSelectedReasoningEffort,
+  selectedThreadPermissionMode,
+  setThreadPermissionMode,
+  fullAccessRiskModalOpen,
+  confirmFullAccessRiskAndSend,
+  cancelFullAccessRiskModal,
   respondToPendingServerRequest,
   renameProject,
   renameThreadById,
@@ -258,6 +298,7 @@ const isRouteSyncInProgress = ref(false)
 const hasInitialized = ref(false)
 const newThreadCwd = ref('')
 const newThreadCustomProjectOptions = ref<Array<{ value: string; label: string }>>([])
+const newThreadDirectoryPickerOpen = ref(false)
 const isSidebarCollapsed = ref(loadSidebarCollapsed())
 const isDarkMode = ref(loadDarkMode())
 const sidebarSearchQuery = ref('')
@@ -486,12 +527,21 @@ function onAddNewThreadProject(cwd: string): void {
   newThreadCwd.value = normalizedCwd
 }
 
+function onConfirmNewThreadDirectory(cwd: string): void {
+  onAddNewThreadProject(cwd)
+  newThreadDirectoryPickerOpen.value = false
+}
+
 function onSelectModel(modelId: string): void {
   setSelectedModelId(modelId)
 }
 
 function onSelectReasoningEffort(effort: ReasoningEffort | ''): void {
   setSelectedReasoningEffort(effort)
+}
+
+function onPermissionMode(mode: ThreadPermissionMode): void {
+  setThreadPermissionMode(selectedThreadId.value, mode)
 }
 
 function onInterruptTurn(): void {

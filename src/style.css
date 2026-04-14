@@ -120,11 +120,209 @@ body {
 [data-theme='dark'] .thread-context-menu,
 [data-theme='dark'] .thread-context-menu.thread-context-menu,
 [data-theme='dark'] .thread-type-menu-panel,
-[data-theme='dark'] .thread-type-menu-panel.thread-type-menu-panel {
+[data-theme='dark'] .thread-type-menu-panel.thread-type-menu-panel,
+[data-theme='dark'] .directory-picker-dialog {
   border-color: #3a3d40;
   background: #1b1d1f;
   color: #f4f4f5;
   box-shadow: 0 16px 50px rgba(0, 0, 0, 0.38);
+}
+
+/* Directory picker: scoped Vue utilities win over plain [data-theme] descendants — anchor on .directory-picker-root */
+[data-theme='dark'].directory-picker-root .directory-picker-title {
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-path-label,
+[data-theme='dark'].directory-picker-root .directory-picker-section-label,
+[data-theme='dark'].directory-picker-root .directory-picker-manual-label {
+  color: #a1a1aa;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-path-value {
+  background: #111315;
+  color: #e5e7eb;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-error {
+  background: rgba(244, 63, 94, 0.12);
+  color: #fecdd3;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-close {
+  color: #d4d4d8;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-list-wrap {
+  border-color: #3a3d40;
+  background: rgba(17, 19, 21, 0.85);
+  scrollbar-color: #71717a #111315;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-list-wrap::-webkit-scrollbar-track {
+  background: #111315;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-list-wrap::-webkit-scrollbar-thumb {
+  background: #71717a;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-list-wrap::-webkit-scrollbar-thumb:hover {
+  background: #a1a1aa;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-row {
+  color: #e5e7eb;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-row:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-empty {
+  color: #a1a1aa;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-folder-icon {
+  border-color: #71717a;
+  background: #27272a;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-filter,
+[data-theme='dark'].directory-picker-root .directory-picker-manual-input {
+  border-color: #3a3d40;
+  background: #111315;
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-filter::placeholder {
+  color: #71717a;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-tool,
+[data-theme='dark'].directory-picker-root .directory-picker-cancel {
+  border-color: #3a3d40;
+  background: #1b1d1f;
+  color: #e5e7eb;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-tool:hover:enabled,
+[data-theme='dark'].directory-picker-root .directory-picker-cancel:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-tool:disabled {
+  opacity: 0.4;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-manual-go {
+  border-color: #52525b;
+  background: #e5e7eb;
+  color: #111315;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-manual-go:hover:enabled {
+  background: #f4f4f5;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-actions {
+  border-color: #33363a;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-confirm {
+  border-color: #52525b;
+  background: #e5e7eb;
+  color: #111315;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-confirm:hover:enabled {
+  background: #f4f4f5;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-confirm:disabled {
+  opacity: 0.45;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-new-folder {
+  border-color: #3a3d40;
+  background: rgba(17, 19, 21, 0.5);
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-new-folder-input {
+  border-color: #3a3d40;
+  background: #111315;
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-new-folder-input::placeholder {
+  color: #71717a;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-new-folder-create {
+  border-color: #52525b;
+  background: #e5e7eb;
+  color: #111315;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-new-folder-create:hover:enabled {
+  background: #f4f4f5;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-new-folder-dismiss {
+  border-color: #3a3d40;
+  background: #1b1d1f;
+  color: #e5e7eb;
+}
+
+[data-theme='dark'].directory-picker-root .directory-picker-new-folder-dismiss:hover:enabled {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].full-access-risk-root .full-access-risk-dialog {
+  border-color: #3a3d40;
+  background: #1b1d1f;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.38);
+}
+
+[data-theme='dark'].full-access-risk-root .full-access-risk-title {
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].full-access-risk-root .full-access-risk-body {
+  color: #a1a1aa;
+}
+
+[data-theme='dark'].full-access-risk-root .full-access-risk-actions {
+  border-color: #33363a;
+}
+
+[data-theme='dark'].full-access-risk-root .full-access-risk-cancel {
+  border-color: #3a3d40;
+  background: #1b1d1f;
+  color: #e5e7eb;
+}
+
+[data-theme='dark'].full-access-risk-root .full-access-risk-cancel:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f4f5;
+}
+
+[data-theme='dark'].full-access-risk-root .full-access-risk-confirm {
+  border-color: #52525b;
+  background: #e5e7eb;
+  color: #111315;
+}
+
+[data-theme='dark'].full-access-risk-root .full-access-risk-confirm:hover {
+  background: #f4f4f5;
 }
 
 [data-theme='dark'] .thread-type-menu-actions,
@@ -167,6 +365,24 @@ body {
 [data-theme='dark'] .thread-type-menu-action-button:hover,
 [data-theme='dark'] .thread-type-menu-option:hover {
   background: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme='dark'] .composer-dropdown-trigger--permission-full,
+[data-theme='dark'] .composer-dropdown-trigger--permission-full .composer-dropdown-value {
+  color: #fb923c;
+}
+
+[data-theme='dark'] .composer-dropdown-trigger--permission-full .composer-dropdown-chevron {
+  color: #fb923c;
+}
+
+[data-theme='dark'] .composer-dropdown-option--permission-full {
+  color: #fb923c;
+}
+
+[data-theme='dark'] .composer-dropdown-option--permission-full:hover,
+[data-theme='dark'] .composer-dropdown-option--permission-full.is-selected {
+  background: rgba(251, 146, 60, 0.12);
 }
 
 [data-theme='dark'] .composer-dropdown-empty,

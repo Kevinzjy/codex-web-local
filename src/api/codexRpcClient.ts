@@ -21,17 +21,30 @@ type ServerRequestReplyBody = {
   }
 }
 
+export type ThreadPermissionMode = 'default' | 'full-access'
+
 export type ChatState = {
   pinnedThreadIds: string[]
   collapsedProjects: Record<string, boolean>
   projectOrder: string[]
   projectDisplayNames: Record<string, string>
   manualUnreadByThreadId: Record<string, boolean>
+  threadPermissionModeByThreadId: Record<string, ThreadPermissionMode>
+  threadFullAccessAcknowledgedByThreadId: Record<string, boolean>
   updatedAtIso: string
 }
 
 export type ChatStatePatch = Partial<
-  Pick<ChatState, 'pinnedThreadIds' | 'collapsedProjects' | 'projectOrder' | 'projectDisplayNames' | 'manualUnreadByThreadId'>
+  Pick<
+    ChatState,
+    | 'pinnedThreadIds'
+    | 'collapsedProjects'
+    | 'projectOrder'
+    | 'projectDisplayNames'
+    | 'manualUnreadByThreadId'
+    | 'threadPermissionModeByThreadId'
+    | 'threadFullAccessAcknowledgedByThreadId'
+  >
 >
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -101,6 +114,30 @@ function normalizeManualUnreadFromUnknown(value: unknown): Record<string, boolea
   return record
 }
 
+function normalizeThreadPermissionModesFromUnknown(value: unknown): Record<string, ThreadPermissionMode> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record: Record<string, ThreadPermissionMode> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (raw === 'default' || raw === 'full-access') {
+      record[key] = raw
+    }
+  }
+  return record
+}
+
+function normalizeThreadFullAccessAckFromUnknown(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record: Record<string, boolean> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (raw === true) {
+      record[key] = true
+    }
+  }
+  return record
+}
+
 function parseChatStatePayload(payload: unknown): ChatState {
   const record = asRecord(payload)
   const updatedAtIso =
@@ -115,6 +152,8 @@ function parseChatStatePayload(payload: unknown): ChatState {
       projectOrder: [],
       projectDisplayNames: {},
       manualUnreadByThreadId: {},
+      threadPermissionModeByThreadId: {},
+      threadFullAccessAcknowledgedByThreadId: {},
       updatedAtIso,
     }
   }
@@ -125,56 +164,76 @@ function parseChatStatePayload(payload: unknown): ChatState {
     projectOrder: normalizeProjectOrderFromUnknown(record.projectOrder),
     projectDisplayNames: normalizeProjectDisplayNamesFromUnknown(record.projectDisplayNames),
     manualUnreadByThreadId: normalizeManualUnreadFromUnknown(record.manualUnreadByThreadId),
+    threadPermissionModeByThreadId: normalizeThreadPermissionModesFromUnknown(record.threadPermissionModeByThreadId),
+    threadFullAccessAcknowledgedByThreadId: normalizeThreadFullAccessAckFromUnknown(
+      record.threadFullAccessAcknowledgedByThreadId,
+    ),
     updatedAtIso,
   }
+}
+
+const RPC_GATEWAY_RETRY_ATTEMPTS = 2
+const RPC_GATEWAY_RETRY_BASE_MS = 280
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export async function rpcCall<T>(method: string, params?: unknown): Promise<T> {
   const body: RpcRequestBody = { method, params: params ?? null }
 
-  let response: Response
-  try {
-    response = await fetch('/codex-api/rpc', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    })
-  } catch (error) {
-    throw new CodexApiError(
-      error instanceof Error ? error.message : `RPC ${method} failed before request was sent`,
-      { code: 'network_error', method },
-    )
-  }
+  for (let attempt = 0; attempt <= RPC_GATEWAY_RETRY_ATTEMPTS; attempt++) {
+    let response: Response
+    try {
+      response = await fetch('/codex-api/rpc', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      })
+    } catch (error) {
+      throw new CodexApiError(
+        error instanceof Error ? error.message : `RPC ${method} failed before request was sent`,
+        { code: 'network_error', method },
+      )
+    }
 
-  let payload: unknown = null
-  try {
-    payload = await response.json()
-  } catch {
-    payload = null
-  }
+    let payload: unknown = null
+    try {
+      payload = await response.json()
+    } catch {
+      payload = null
+    }
 
-  if (!response.ok) {
-    throw new CodexApiError(
-      extractErrorMessage(payload, `RPC ${method} failed with HTTP ${response.status}`),
-      {
-        code: 'http_error',
+    if (!response.ok) {
+      const transient = response.status === 502 || response.status === 503
+      if (transient && attempt < RPC_GATEWAY_RETRY_ATTEMPTS) {
+        await sleepMs(RPC_GATEWAY_RETRY_BASE_MS * (attempt + 1))
+        continue
+      }
+      throw new CodexApiError(
+        extractErrorMessage(payload, `RPC ${method} failed with HTTP ${response.status}`),
+        {
+          code: 'http_error',
+          method,
+          status: response.status,
+        },
+      )
+    }
+
+    const envelope = payload as RpcEnvelope<T> | null
+    if (!envelope || typeof envelope !== 'object' || !('result' in envelope)) {
+      throw new CodexApiError(`RPC ${method} returned malformed envelope`, {
+        code: 'invalid_response',
         method,
         status: response.status,
-      },
-    )
+      })
+    }
+    return envelope.result
   }
 
-  const envelope = payload as RpcEnvelope<T> | null
-  if (!envelope || typeof envelope !== 'object' || !('result' in envelope)) {
-    throw new CodexApiError(`RPC ${method} returned malformed envelope`, {
-      code: 'invalid_response',
-      method,
-      status: response.status,
-    })
-  }
-  return envelope.result
+  throw new CodexApiError(`RPC ${method} failed`, { code: 'http_error', method })
 }
 
 export async function fetchRpcMethodCatalog(): Promise<string[]> {

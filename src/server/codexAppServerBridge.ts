@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { ChatStateStore, type ChatStatePatch } from './chatStateStore.js'
 import { cwdIsKnownCodexWorkspace } from './codexThreadGitAllowance.js'
 import { getGitStatusForCwd } from './gitStatus.js'
+import { handleFsDirectoriesGet, handleFsMkdirPost } from './fsDirectories.js'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -132,6 +133,8 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 class AppServerProcess {
   private process: ChildProcessWithoutNullStreams | null = null
   private initialized = false
+  /** Serializes `initialize` so concurrent RPCs cannot send duplicate initialize calls. */
+  private initPromise: Promise<void> | null = null
   private readBuffer = ''
   private nextId = 1
   private stopping = false
@@ -186,6 +189,7 @@ class AppServerProcess {
       this.pendingServerRequests.clear()
       this.process = null
       this.initialized = false
+      this.initPromise = null
       this.readBuffer = ''
     })
   }
@@ -316,14 +320,26 @@ class AppServerProcess {
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) return
 
-    await this.call('initialize', {
-      clientInfo: {
-        name: 'codex-web-local',
-        version: '0.1.0',
-      },
-    })
+    if (!this.initPromise) {
+      this.initPromise = this.initializeOnce()
+    }
 
-    this.initialized = true
+    await this.initPromise
+  }
+
+  private async initializeOnce(): Promise<void> {
+    try {
+      await this.call('initialize', {
+        clientInfo: {
+          name: 'codex-web-local',
+          version: '0.1.0',
+        },
+      })
+      this.initialized = true
+    } catch (error) {
+      this.initPromise = null
+      throw error
+    }
   }
 
   async rpc(method: string, params: unknown): Promise<unknown> {
@@ -381,6 +397,7 @@ class AppServerProcess {
     this.stopping = true
     this.process = null
     this.initialized = false
+    this.initPromise = null
     this.readBuffer = ''
 
     const failure = new Error('codex app-server stopped')
@@ -607,6 +624,18 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
         return
       }
 
+      if (req.method === 'GET' && url.pathname === '/codex-api/fs/directories') {
+        const rawPath = url.searchParams.get('path')
+        await handleFsDirectoriesGet(rawPath, res)
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/fs/mkdir') {
+        const payload = await readJsonBody(req)
+        await handleFsMkdirPost(payload, res)
+        return
+      }
+
       if (req.method === 'GET' && url.pathname === '/codex-api/git/status') {
         const cwd = url.searchParams.get('cwd') ?? ''
         if (!cwd.trim()) {
@@ -653,6 +682,13 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
         }
         if ('manualUnreadByThreadId' in body) {
           patch.manualUnreadByThreadId = body.manualUnreadByThreadId as ChatStatePatch['manualUnreadByThreadId']
+        }
+        if ('threadPermissionModeByThreadId' in body) {
+          patch.threadPermissionModeByThreadId = body.threadPermissionModeByThreadId as ChatStatePatch['threadPermissionModeByThreadId']
+        }
+        if ('threadFullAccessAcknowledgedByThreadId' in body) {
+          patch.threadFullAccessAcknowledgedByThreadId =
+            body.threadFullAccessAcknowledgedByThreadId as ChatStatePatch['threadFullAccessAcknowledgedByThreadId']
         }
 
         const saved = await chatStateStore.patch(patch)
