@@ -51,19 +51,37 @@ function parseUserMessageContent(
   const rawBlocks: UiMessage[] = []
 
   for (const [index, block] of content.entries()) {
+    const blockType = block.type as string
     if (block.type === 'text' && typeof block.text === 'string' && block.text.length > 0) {
       textChunks.push(block.text)
     }
     if (block.type === 'image' && typeof block.url === 'string' && block.url.trim().length > 0) {
       images.push(block.url.trim())
     }
+    if (block.type === 'mention') {
+      const path = typeof block.path === 'string' ? block.path.trim() : ''
+      const name = typeof block.name === 'string' ? block.name.trim() : ''
+      const display = name || path
+      if (display) {
+        textChunks.push(`@${display}`)
+      }
+    }
+    if (block.type === 'localImage' && typeof block.path === 'string' && block.path.trim().length > 0) {
+      images.push(block.path.trim())
+    }
+    if (block.type === 'skill') {
+      const name = typeof block.name === 'string' ? block.name.trim() : ''
+      if (name) {
+        textChunks.push(`/skill ${name}`)
+      }
+    }
 
-    if (block.type !== 'text' && block.type !== 'image') {
+    if (blockType !== 'text' && blockType !== 'image' && blockType !== 'mention' && blockType !== 'localImage' && blockType !== 'skill') {
       rawBlocks.push({
         id: `${itemId}:user-content:${index}`,
         role: 'user',
         text: '',
-        messageType: `userContent.${block.type}`,
+        messageType: `userContent.${blockType}`,
         rawPayload: toRawPayload(block),
         isUnhandled: true,
       })

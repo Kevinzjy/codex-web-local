@@ -123,6 +123,11 @@
                   <p class="worked-separator-text">{{ message.text }}</p>
                   <span class="worked-separator-line" aria-hidden="true" />
                 </div>
+                <pre
+                  v-else-if="message.messageType === 'clientSlash.status'"
+                  class="message-slasht-status"
+                  >{{ message.text }}</pre
+                >
                 <template v-else>
                   <template v-for="(block, bIdx) in parseMessageBlocks(message.text)" :key="`blk-${message.id}-${bIdx}`">
                     <pre
@@ -1056,6 +1061,11 @@ onBeforeUnmount(() => {
 
 .message-code-block-inner {
   @apply m-0 block font-mono text-[0.8125rem] leading-relaxed text-slate-900 whitespace-pre;
+}
+
+.message-slasht-status {
+  @apply my-2 w-full min-w-0 max-w-full overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5;
+  @apply m-0 font-mono text-[0.75rem] leading-snug text-slate-900 whitespace-pre-wrap;
 }
 
 .message-card[data-role='user'] .message-code-block {

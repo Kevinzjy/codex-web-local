@@ -24,7 +24,7 @@
           type="text"
           name="git-worktree-path"
           autocomplete="off"
-          placeholder="../RNA-wm-flow-matching"
+          placeholder="../new-worktree"
           :disabled="busy"
           @keydown.enter.prevent="onConfirm"
         />
@@ -37,7 +37,7 @@
           type="text"
           name="git-worktree-branch"
           autocomplete="off"
-          placeholder="codex/flow-matching"
+          placeholder="codex/new-branch"
           :disabled="busy"
           @keydown.enter.prevent="onConfirm"
         />

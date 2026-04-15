@@ -11,10 +11,13 @@ import {
   type ChatState,
   type ChatStatePatch,
   type RpcNotification,
+  type ThreadFlagSyncEntry,
+  type ThreadRunStateEntry,
 } from './codexRpcClient'
 import type {
   ConfigReadResponse,
   GetAccountRateLimitsResponse,
+  GetAccountResponse,
   ModelListResponse,
   ReasoningEffort,
   ThreadListResponse,
@@ -212,18 +215,140 @@ export async function forkThread(
   }
 }
 
+function basenameFromPath(pathValue: string): string {
+  const normalized = pathValue.replace(/\\/gu, '/').replace(/\/+$/gu, '')
+  const tail = normalized.split('/').filter(Boolean).at(-1) ?? ''
+  return tail || pathValue
+}
+
+export type SkillSummary = {
+  name: string
+  description: string
+  path: string
+}
+
+/**
+ * Lists Codex skills for slash-command completion (`/skill` style).
+ */
+export async function listSkillsForCwd(cwd: string): Promise<SkillSummary[]> {
+  try {
+    const params: Record<string, unknown> = {}
+    const trimmed = cwd.trim()
+    if (trimmed) {
+      params.cwds = [trimmed]
+    }
+    const payload = await callRpc<{
+      data?: Array<{
+        skills?: Array<{
+          name?: string
+          path?: string
+          description?: string
+          shortDescription?: string
+        }>
+      }>
+    }>('skills/list', params)
+
+    const rows = Array.isArray(payload.data) ? payload.data : []
+    const byName = new Map<string, SkillSummary>()
+    for (const row of rows) {
+      const skills = Array.isArray(row.skills) ? row.skills : []
+      for (const s of skills) {
+        const name = typeof s.name === 'string' ? s.name.trim() : ''
+        if (!name || byName.has(name)) continue
+        const shortDesc = typeof s.shortDescription === 'string' ? s.shortDescription.trim() : ''
+        const longDesc = typeof s.description === 'string' ? s.description.trim() : ''
+        byName.set(name, {
+          name,
+          description: shortDesc || longDesc || 'Skill',
+          path: typeof s.path === 'string' ? s.path : '',
+        })
+      }
+    }
+    return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))
+  } catch {
+    return []
+  }
+}
+
+/** Resolve `./` / `../` relative paths against thread cwd for stable mention paths (POSIX-style). */
+function resolveMentionPathForServer(userPath: string, cwd: string): string {
+  const u = userPath.replace(/\\/gu, '/').trim()
+  if (u.startsWith('/')) return u.replace(/\/+/gu, '/')
+  if (u.startsWith('~')) return u
+
+  const baseParts = cwd.replace(/\\/gu, '/').replace(/\/+$/gu, '').split('/').filter(Boolean)
+  for (const seg of u.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') {
+      baseParts.pop()
+    } else {
+      baseParts.push(seg)
+    }
+  }
+  return `/${baseParts.join('/')}`
+}
+
+/**
+ * Minimal structured mention parser for `@path` tokens in free text.
+ * We only treat path-like tokens as mentions to avoid breaking emails.
+ */
+function splitTextAndMentions(rawText: string, mentionResolveCwd?: string): UserInput[] {
+  const input: UserInput[] = []
+  /** Path after @: absolute (~, /), dot-relative (., .., ./…), or cwd-relative without a leading "./" (e.g. src/foo). */
+  const mentionRegex = /(^|\s)@((?:[~./][^\s]*)|(?:[^\s@./][^\s]*))/gu
+  let cursor = 0
+
+  const pushText = (value: string): void => {
+    if (value.length === 0) return
+    input.push({ type: 'text', text: value, text_elements: [] })
+  }
+
+  for (const match of rawText.matchAll(mentionRegex)) {
+    const full = match[0] ?? ''
+    const leading = match[1] ?? ''
+    const mentionPath = match[2] ?? ''
+    const offset = match.index ?? -1
+    if (offset < 0) continue
+
+    const before = rawText.slice(cursor, offset)
+    pushText(before + leading)
+
+    const normalizedPath = mentionPath.trim()
+    if (normalizedPath.length > 0) {
+      const cwd = mentionResolveCwd?.trim() ?? ''
+      const serverPath =
+        cwd && !normalizedPath.startsWith('/') && !normalizedPath.startsWith('~')
+          ? resolveMentionPathForServer(normalizedPath, cwd)
+          : normalizedPath
+      input.push({
+        type: 'mention',
+        name: basenameFromPath(serverPath),
+        path: serverPath,
+      })
+    } else {
+      pushText(full)
+    }
+
+    cursor = offset + full.length
+  }
+
+  pushText(rawText.slice(cursor))
+  return input
+}
+
 export async function startThreadTurn(
   threadId: string,
   draft: UiComposerDraft,
   model?: string,
   effort?: ReasoningEffort,
   permissionMode?: ThreadPermissionMode,
+  mentionResolveCwd?: string,
 ): Promise<void> {
   try {
     const text = draft.text.trim()
     const input: UserInput[] = []
     if (text.length > 0) {
-      input.push({ type: 'text', text })
+      input.push(...splitTextAndMentions(text, mentionResolveCwd))
     }
     for (const image of draft.images) {
       const url = image.url.trim()
@@ -293,6 +418,14 @@ export async function getAccountRateLimits(): Promise<GetAccountRateLimitsRespon
   return callRpc<GetAccountRateLimitsResponse>('account/rateLimits/read')
 }
 
+export async function getAccountInfo(): Promise<GetAccountResponse> {
+  return callRpc<GetAccountResponse>('account/read', { refreshToken: false })
+}
+
+export async function readEffectiveConfig(): Promise<ConfigReadResponse> {
+  return callRpc<ConfigReadResponse>('config/read', {})
+}
+
 export async function getGitStatus(cwd: string): Promise<UiGitStatus> {
   return fetchGitStatus(cwd)
 }
@@ -309,6 +442,6 @@ export async function updatePinnedThreadIds(pinnedThreadIds: string[]): Promise<
   return patchChatStateRpc({ pinnedThreadIds })
 }
 
-export type { ChatState, ChatStatePatch }
+export type { ChatState, ChatStatePatch, ThreadFlagSyncEntry, ThreadRunStateEntry }
 
 // `thread/loaded/list` returns sessions loaded in memory, not currently running turns.

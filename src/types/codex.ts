@@ -54,12 +54,17 @@ export type ThreadItem = {
   summary?: string[]
 }
 
-export type UserInput = {
-  type: string
-  text?: string
-  path?: string
-  url?: string
+export type UserInputTextElement = {
+  byteRange: [number, number]
+  placeholder?: string | null
 }
+
+export type UserInput =
+  | { type: 'text'; text: string; text_elements: UserInputTextElement[] }
+  | { type: 'image'; url: string }
+  | { type: 'localImage'; path: string }
+  | { type: 'skill'; name: string; path: string }
+  | { type: 'mention'; name: string; path: string }
 
 export type UiComposerImage = {
   id: string

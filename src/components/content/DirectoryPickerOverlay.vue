@@ -60,7 +60,7 @@
           <ul class="directory-picker-list">
             <li v-for="entry in filteredDirectories" :key="entry.path">
               <button class="directory-picker-row" type="button" @click="openPath(entry.path)">
-                <span class="directory-picker-folder-icon" aria-hidden="true" />
+                <IconTablerFolder class="directory-picker-folder-icon" />
                 {{ entry.name }}
               </button>
             </li>
@@ -140,6 +140,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import IconTablerFolder from '../icons/IconTablerFolder.vue'
 import { createFsDirectory, fetchFsDirectories } from '../../api/fsDirectoriesClient'
 import type { FsDirectoryEntry } from '../../types/fsDirectories'
 
@@ -401,7 +402,7 @@ onBeforeUnmount(() => {
 }
 
 .directory-picker-folder-icon {
-  @apply inline-block h-4 w-4 shrink-0 rounded-sm border border-zinc-400 bg-zinc-100;
+  @apply h-4 w-4 shrink-0;
 }
 
 .directory-picker-empty {

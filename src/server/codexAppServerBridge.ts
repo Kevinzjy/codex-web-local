@@ -2,7 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { ChatStateStore, type ChatStatePatch } from './chatStateStore.js'
 import { cwdIsKnownCodexWorkspace } from './codexThreadGitAllowance.js'
 import { createGitWorktreeForCwd, getGitStatusForCwd } from './gitStatus.js'
-import { handleFsDirectoriesGet, handleFsMkdirPost } from './fsDirectories.js'
+import { handleComposerSlashSuggestionsGet } from './composerSlashSuggestions.js'
+import { handleFsCompleteGet, handleFsDirectoriesGet, handleFsMkdirPost } from './fsDirectories.js'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -635,6 +636,20 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
         return
       }
 
+      if (req.method === 'GET' && url.pathname === '/codex-api/fs/complete') {
+        const cwd = url.searchParams.get('cwd')
+        const q = url.searchParams.get('q')
+        await handleFsCompleteGet(cwd, q, res)
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/composer/slash-suggestions') {
+        const cwd = url.searchParams.get('cwd')
+        const q = url.searchParams.get('q')
+        await handleComposerSlashSuggestionsGet(cwd, q, (method, params) => appServer.rpc(method, params), res)
+        return
+      }
+
       if (req.method === 'POST' && url.pathname === '/codex-api/fs/mkdir') {
         const payload = await readJsonBody(req)
         await handleFsMkdirPost(payload, res)
@@ -721,6 +736,21 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
         }
         if ('manualUnreadByThreadId' in body) {
           patch.manualUnreadByThreadId = body.manualUnreadByThreadId as ChatStatePatch['manualUnreadByThreadId']
+        }
+        if ('readStateByThreadId' in body) {
+          patch.readStateByThreadId = body.readStateByThreadId as ChatStatePatch['readStateByThreadId']
+        }
+        if ('manualUnreadSyncByThreadId' in body) {
+          patch.manualUnreadSyncByThreadId =
+            body.manualUnreadSyncByThreadId as ChatStatePatch['manualUnreadSyncByThreadId']
+        }
+        if ('eventUnreadSyncByThreadId' in body) {
+          patch.eventUnreadSyncByThreadId =
+            body.eventUnreadSyncByThreadId as ChatStatePatch['eventUnreadSyncByThreadId']
+        }
+        if ('threadRunStateByThreadId' in body) {
+          patch.threadRunStateByThreadId =
+            body.threadRunStateByThreadId as ChatStatePatch['threadRunStateByThreadId']
         }
         if ('threadPermissionModeByThreadId' in body) {
           patch.threadPermissionModeByThreadId = body.threadPermissionModeByThreadId as ChatStatePatch['threadPermissionModeByThreadId']

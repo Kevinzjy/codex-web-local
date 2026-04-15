@@ -23,6 +23,10 @@ type ServerRequestReplyBody = {
 
 export type ThreadPermissionMode = 'default' | 'full-access'
 
+export type ThreadFlagSyncEntry = { value: boolean; bumpMs: number }
+
+export type ThreadRunStateEntry = { turnId: string | null; bumpMs: number }
+
 export type ChatState = {
   pinnedThreadIds: string[]
   collapsedProjects: Record<string, boolean>
@@ -30,6 +34,10 @@ export type ChatState = {
   projectDisplayNames: Record<string, string>
   projectCwdByProjectName: Record<string, string>
   manualUnreadByThreadId: Record<string, boolean>
+  manualUnreadSyncByThreadId: Record<string, ThreadFlagSyncEntry>
+  eventUnreadSyncByThreadId: Record<string, ThreadFlagSyncEntry>
+  threadRunStateByThreadId: Record<string, ThreadRunStateEntry>
+  readStateByThreadId: Record<string, string>
   threadPermissionModeByThreadId: Record<string, ThreadPermissionMode>
   threadFullAccessAcknowledgedByThreadId: Record<string, boolean>
   updatedAtIso: string
@@ -44,6 +52,10 @@ export type ChatStatePatch = Partial<
     | 'projectDisplayNames'
     | 'projectCwdByProjectName'
     | 'manualUnreadByThreadId'
+    | 'manualUnreadSyncByThreadId'
+    | 'eventUnreadSyncByThreadId'
+    | 'threadRunStateByThreadId'
+    | 'readStateByThreadId'
     | 'threadPermissionModeByThreadId'
     | 'threadFullAccessAcknowledgedByThreadId'
   >
@@ -129,6 +141,55 @@ function normalizeManualUnreadFromUnknown(value: unknown): Record<string, boolea
   return record
 }
 
+function normalizeFlagSyncFromUnknown(value: unknown): Record<string, ThreadFlagSyncEntry> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record: Record<string, ThreadFlagSyncEntry> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const o = raw as Record<string, unknown>
+    const bumpMs = typeof o.bumpMs === 'number' && Number.isFinite(o.bumpMs) ? o.bumpMs : 0
+    if (o.value === true) {
+      record[key] = { value: true, bumpMs }
+    } else if (o.value === false) {
+      record[key] = { value: false, bumpMs }
+    }
+  }
+  return record
+}
+
+function normalizeRunStateFromUnknown(value: unknown): Record<string, ThreadRunStateEntry> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record: Record<string, ThreadRunStateEntry> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const o = raw as Record<string, unknown>
+    const bumpMs = typeof o.bumpMs === 'number' && Number.isFinite(o.bumpMs) ? o.bumpMs : 0
+    if (o.turnId === null) {
+      record[key] = { turnId: null, bumpMs }
+      continue
+    }
+    if (typeof o.turnId === 'string' && o.turnId.length > 0) {
+      record[key] = { turnId: o.turnId, bumpMs }
+    }
+  }
+  return record
+}
+
+function normalizeReadStateFromUnknown(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record: Record<string, string> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (typeof raw !== 'string') continue
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    record[key] = trimmed
+  }
+  return record
+}
+
 function normalizeThreadPermissionModesFromUnknown(value: unknown): Record<string, ThreadPermissionMode> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
   const record: Record<string, ThreadPermissionMode> = {}
@@ -168,11 +229,19 @@ function parseChatStatePayload(payload: unknown): ChatState {
       projectDisplayNames: {},
       projectCwdByProjectName: {},
       manualUnreadByThreadId: {},
+      manualUnreadSyncByThreadId: {},
+      eventUnreadSyncByThreadId: {},
+      threadRunStateByThreadId: {},
+      readStateByThreadId: {},
       threadPermissionModeByThreadId: {},
       threadFullAccessAcknowledgedByThreadId: {},
       updatedAtIso,
     }
   }
+
+  const manualUnreadSyncByThreadId = normalizeFlagSyncFromUnknown(record.manualUnreadSyncByThreadId)
+  const eventUnreadSyncByThreadId = normalizeFlagSyncFromUnknown(record.eventUnreadSyncByThreadId)
+  const threadRunStateByThreadId = normalizeRunStateFromUnknown(record.threadRunStateByThreadId)
 
   return {
     pinnedThreadIds: normalizePinnedThreadIdsFromUnknown(record.pinnedThreadIds),
@@ -181,6 +250,10 @@ function parseChatStatePayload(payload: unknown): ChatState {
     projectDisplayNames: normalizeProjectDisplayNamesFromUnknown(record.projectDisplayNames),
     projectCwdByProjectName: normalizeProjectCwdByProjectNameFromUnknown(record.projectCwdByProjectName),
     manualUnreadByThreadId: normalizeManualUnreadFromUnknown(record.manualUnreadByThreadId),
+    manualUnreadSyncByThreadId,
+    eventUnreadSyncByThreadId,
+    threadRunStateByThreadId,
+    readStateByThreadId: normalizeReadStateFromUnknown(record.readStateByThreadId),
     threadPermissionModeByThreadId: normalizeThreadPermissionModesFromUnknown(record.threadPermissionModeByThreadId),
     threadFullAccessAcknowledgedByThreadId: normalizeThreadFullAccessAckFromUnknown(
       record.threadFullAccessAcknowledgedByThreadId,

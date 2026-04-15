@@ -27,11 +27,36 @@
           :disabled="disabled || !activeThreadId || isTurnInProgress"
           :readonly="isSpeechListening"
           autocomplete="off"
+          @input="onDraftInput"
+          @click="refreshTriggerSuggestions"
+          @keyup="onDraftCursorMove"
           @keydown="onInputKeydown"
           @compositionstart="onCompositionStart"
           @compositionend="onCompositionEnd"
           @paste="onPaste"
         />
+        <div
+          v-if="triggerMenuOpen && triggerSuggestions.length > 0"
+          class="thread-composer-trigger-menu"
+          :class="{ 'thread-composer-trigger-menu--flip-up': triggerMenuFlipUp }"
+          role="listbox"
+          :aria-label="`Suggestions for ${triggerChar || 'trigger'}`"
+        >
+          <button
+            v-for="(item, index) in triggerSuggestions"
+            :key="item.id"
+            class="thread-composer-trigger-item"
+            :class="{ 'thread-composer-trigger-item--active': index === triggerActiveIndex }"
+            type="button"
+            role="option"
+            :aria-selected="index === triggerActiveIndex"
+            @mousedown.prevent
+            @click="applyTriggerSuggestion(index)"
+          >
+            <span class="thread-composer-trigger-item-label">{{ item.label }}</span>
+            <span v-if="item.description" class="thread-composer-trigger-item-desc">{{ item.description }}</span>
+          </button>
+        </div>
       </div>
 
       <p
@@ -42,10 +67,6 @@
       >
         <template v-if="isSpeechStarting">Requesting microphone… Allow access if the browser asks.</template>
         <template v-else>Listening — speak now. Tap the mic again to stop.</template>
-      </p>
-
-      <p v-if="isLikelyIOS()" class="thread-composer-ios-voice-note">
-        Voice input is not available on iOS. Use the keyboard or a desktop browser.
       </p>
 
       <p v-if="imageError" class="thread-composer-image-error" role="status">{{ imageError }}</p>
@@ -219,12 +240,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ReasoningEffort, ThreadPermissionMode, UiComposerDraft, UiComposerImage } from '../../types/codex'
+import type { FsEntryKind } from '../../types/fsDirectories'
+import { fetchComposerSlashSuggestions } from '../../api/composerSlashClient'
+import { fetchFsComplete } from '../../api/fsDirectoriesClient'
 import { useWebSpeechRecognition } from '../../composables/useWebSpeechRecognition'
 import { createGitWorktree } from '../../api/codexRpcClient'
 import { CodexApiError } from '../../api/codexErrors'
-import { isLikelyIOS } from '../../utils/platform'
+import { isCoarsePointer, isLikelyIOS } from '../../utils/platform'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
 import IconTablerPlayerStopFilled from '../icons/IconTablerPlayerStopFilled.vue'
 import IconTablerMicrophone from '../icons/IconTablerMicrophone.vue'
@@ -278,6 +302,27 @@ const images = ref<UiComposerImage[]>([])
 const imageError = ref('')
 const imageInputRef = ref<HTMLInputElement | null>(null)
 const messageInputRef = ref<HTMLTextAreaElement | null>(null)
+type TriggerSuggestion = {
+  id: string
+  label: string
+  insertText: string
+  description?: string
+  /** True when the fs entry is a directory (@ completion can drill into children). */
+  isDirectory?: boolean
+}
+
+const triggerMenuOpen = ref(false)
+const triggerSuggestions = ref<TriggerSuggestion[]>([])
+const triggerActiveIndex = ref(0)
+const triggerChar = ref<'/' | '@' | ''>('')
+const triggerTokenRange = ref<{ start: number; end: number } | null>(null)
+const atCompleteRequestId = ref(0)
+/** Open the trigger menu upward when there is little space below the input (viewport clipping). */
+const triggerMenuFlipUp = ref(false)
+let atDebounceTimer: number | null = null
+const slashAllSuggestions = ref<TriggerSuggestion[] | null>(null)
+const slashCacheCwd = ref('')
+let slashCacheLoadId = 0
 
 /** Matches Tailwind max-h-40 (10rem) — keep in sync with .thread-composer-input */
 const COMPOSER_TEXTAREA_MAX_HEIGHT_PX = 160
@@ -381,6 +426,7 @@ const speechStatusVisible = computed(() => isSpeechStarting.value || isSpeechLis
 const speechButtonLabel = computed(() => {
   if (!canEdit.value) return 'Voice input'
   if (!speech.isSupported) {
+    if (isCoarsePointer()) return 'Voice input'
     return isLikelyIOS() ? 'Voice unavailable on iOS' : 'Voice input unavailable'
   }
   if (isSpeechStarting.value) return 'Cancel microphone setup'
@@ -390,6 +436,7 @@ const speechButtonLabel = computed(() => {
 const speechButtonTitle = computed(() => {
   if (!canEdit.value) return 'Select a thread to use voice input'
   if (!speech.isSupported) {
+    if (isCoarsePointer()) return ''
     return isLikelyIOS()
       ? 'Web Speech API is not available on iOS (WebKit). Use the keyboard or a desktop browser.'
       : 'Voice input is not supported in this browser.'
@@ -441,6 +488,339 @@ const contextUsageLevel = computed(() => {
   if (percent >= 80) return 'warning'
   return 'normal'
 })
+
+type TriggerContext = {
+  char: '/' | '@'
+  query: string
+  start: number
+  end: number
+}
+
+function clearAtDebounce(): void {
+  if (atDebounceTimer !== null) {
+    clearTimeout(atDebounceTimer)
+    atDebounceTimer = null
+  }
+}
+
+function filterSlashByQuery(entries: TriggerSuggestion[], query: string): TriggerSuggestion[] {
+  const q = query.trim().toLowerCase()
+  if (!q) {
+    return entries
+  }
+  return entries.filter((row) => {
+    const desc = row.description?.toLowerCase() ?? ''
+    return (
+      row.label.toLowerCase().includes(q) ||
+      row.id.toLowerCase().includes(q) ||
+      (desc.length > 0 && desc.includes(q))
+    )
+  })
+}
+
+async function ensureSlashSuggestionCache(): Promise<void> {
+  const cwd = props.threadCwd.trim()
+  if (slashCacheCwd.value === cwd && slashAllSuggestions.value !== null) {
+    return
+  }
+  const myId = ++slashCacheLoadId
+  const res = await fetchComposerSlashSuggestions(cwd, '')
+  if (myId !== slashCacheLoadId) {
+    return
+  }
+  slashCacheCwd.value = cwd
+  slashAllSuggestions.value = res.entries.map((e) => ({
+    id: e.id,
+    label: e.label,
+    insertText: e.insertText,
+    description: e.description,
+  }))
+}
+
+watch(
+  () => props.threadCwd,
+  () => {
+    slashAllSuggestions.value = null
+    slashCacheCwd.value = ''
+    slashCacheLoadId += 1
+    void ensureSlashSuggestionCache()
+  },
+  { immediate: true },
+)
+
+function closeTriggerMenu(): void {
+  clearAtDebounce()
+  atCompleteRequestId.value += 1
+  triggerMenuOpen.value = false
+  triggerMenuFlipUp.value = false
+  triggerSuggestions.value = []
+  triggerActiveIndex.value = 0
+  triggerChar.value = ''
+  triggerTokenRange.value = null
+}
+
+/** ~max-h-52 (13rem); keep in sync with `.thread-composer-trigger-menu` max-height */
+const TRIGGER_MENU_MAX_HEIGHT_PX = 208
+
+function syncTriggerMenuPlacement(): void {
+  const el = messageInputRef.value
+  if (!el) {
+    triggerMenuFlipUp.value = false
+    return
+  }
+  const rect = el.getBoundingClientRect()
+  const margin = 10
+  const spaceBelow = window.innerHeight - rect.bottom - margin
+  const spaceAbove = rect.top - margin
+  triggerMenuFlipUp.value = spaceBelow < TRIGGER_MENU_MAX_HEIGHT_PX && spaceAbove > spaceBelow
+}
+
+function onWindowRelayoutForTriggerMenu(): void {
+  if (triggerMenuOpen.value) {
+    syncTriggerMenuPlacement()
+  }
+}
+
+watch(
+  () => [triggerMenuOpen.value, triggerSuggestions.value.length] as const,
+  async ([open]) => {
+    if (!open) {
+      triggerMenuFlipUp.value = false
+      return
+    }
+    await nextTick()
+    syncTriggerMenuPlacement()
+  },
+  { flush: 'post' },
+)
+
+function extractTriggerContext(text: string, caret: number): TriggerContext | null {
+  if (caret < 0 || caret > text.length) return null
+
+  let start = caret
+  while (start > 0) {
+    const previous = text[start - 1]
+    if (previous === ' ' || previous === '\n' || previous === '\t') break
+    start -= 1
+  }
+
+  const token = text.slice(start, caret)
+  if (token.length < 1) return null
+  const char = token[0]
+  if (char !== '/' && char !== '@') return null
+  if (start > 0) {
+    const previous = text[start - 1]
+    if (previous !== ' ' && previous !== '\n' && previous !== '\t') return null
+  }
+
+  return {
+    char,
+    query: token.slice(1),
+    start,
+    end: caret,
+  }
+}
+
+function fallbackAtHints(queryRaw: string): TriggerSuggestion[] {
+  const cwd = props.threadCwd.trim()
+  const base: TriggerSuggestion[] = [
+    { id: '@rel', label: '@.', insertText: '@.', description: 'Relative to thread cwd' },
+    { id: '@par', label: '@../', insertText: '@../', description: 'Parent of cwd' },
+    { id: '@abs', label: '@/', insertText: '@/', description: 'Absolute path on host' },
+  ]
+  if (cwd) {
+    const prefix = cwd.endsWith('/') ? cwd : `${cwd}/`
+    base.unshift({
+      id: 'cwd-prefix',
+      label: `@${prefix}`,
+      insertText: `@${prefix}`,
+      description: 'Thread working directory',
+    })
+  }
+  const q = queryRaw.trim().toLowerCase()
+  if (!q) return base
+  return base.filter((row) => row.label.toLowerCase().includes(q))
+}
+
+function mentionInsertForEntry(cwdNorm: string, entryPath: string, kind: FsEntryKind): string {
+  const cwd = cwdNorm.replace(/\\/gu, '/').replace(/\/+$/gu, '')
+  const p = entryPath.replace(/\\/gu, '/')
+  let body: string
+  if (p.startsWith(`${cwd}/`) || p === cwd) {
+    const rest = p === cwd ? '' : p.slice(cwd.length + 1)
+    body = rest || '.'
+    if (kind === 'directory' && !body.endsWith('/') && body !== '.') {
+      body += '/'
+    }
+  } else {
+    body = p
+    if (kind === 'directory' && !body.endsWith('/')) {
+      body += '/'
+    }
+  }
+  if (kind === 'file') {
+    return `@${body} `
+  }
+  return `@${body}`
+}
+
+async function runSlashCompletionAfterCache(context: TriggerContext, requestId: number): Promise<void> {
+  try {
+    await ensureSlashSuggestionCache()
+    if (requestId !== atCompleteRequestId.value) {
+      return
+    }
+    const cwd = props.threadCwd.trim()
+    if (slashCacheCwd.value !== cwd || slashAllSuggestions.value === null) {
+      closeTriggerMenu()
+      return
+    }
+    const items = filterSlashByQuery(slashAllSuggestions.value, context.query).slice(0, 128)
+    if (items.length === 0) {
+      closeTriggerMenu()
+      return
+    }
+    triggerSuggestions.value = items
+    triggerActiveIndex.value = 0
+    triggerMenuOpen.value = true
+    triggerChar.value = '/'
+    triggerTokenRange.value = { start: context.start, end: context.end }
+  } catch {
+    if (requestId !== atCompleteRequestId.value) {
+      return
+    }
+    closeTriggerMenu()
+  }
+}
+
+async function runAtPathCompletion(context: TriggerContext, requestId: number): Promise<void> {
+  const cwd = props.threadCwd.trim()
+  if (!cwd) {
+    return
+  }
+  try {
+    const res = await fetchFsComplete(cwd, context.query)
+    if (requestId !== atCompleteRequestId.value) return
+    const suggestions: TriggerSuggestion[] = res.entries.map((e) => ({
+      id: `fs:${e.path}`,
+      label: e.kind === 'directory' ? `${e.name}/` : e.name,
+      insertText: mentionInsertForEntry(cwd, e.path, e.kind),
+      description: e.path,
+      isDirectory: e.kind === 'directory',
+    }))
+    if (suggestions.length === 0) {
+      triggerMenuOpen.value = false
+      return
+    }
+    triggerSuggestions.value = suggestions
+    triggerActiveIndex.value = 0
+    triggerMenuOpen.value = true
+    triggerChar.value = '@'
+    triggerTokenRange.value = { start: context.start, end: context.end }
+  } catch {
+    if (requestId !== atCompleteRequestId.value) return
+    const items = fallbackAtHints(context.query)
+    triggerSuggestions.value = items
+    triggerActiveIndex.value = 0
+    triggerMenuOpen.value = items.length > 0
+  }
+}
+
+function refreshTriggerSuggestions(): void {
+  const el = messageInputRef.value
+  if (!el || !canEdit.value) {
+    closeTriggerMenu()
+    return
+  }
+
+  const context = extractTriggerContext(draft.value, el.selectionStart ?? draft.value.length)
+  if (!context) {
+    closeTriggerMenu()
+    return
+  }
+
+  triggerChar.value = context.char
+  triggerTokenRange.value = { start: context.start, end: context.end }
+
+  if (context.char === '/') {
+    clearAtDebounce()
+    atCompleteRequestId.value += 1
+    const requestId = atCompleteRequestId.value
+    const cwd = props.threadCwd.trim()
+    if (slashCacheCwd.value === cwd && slashAllSuggestions.value !== null) {
+      const items = filterSlashByQuery(slashAllSuggestions.value, context.query).slice(0, 128)
+      if (items.length === 0) {
+        closeTriggerMenu()
+        return
+      }
+      triggerSuggestions.value = items
+      triggerActiveIndex.value = 0
+      triggerMenuOpen.value = true
+      return
+    }
+    triggerMenuOpen.value = false
+    atDebounceTimer = window.setTimeout(() => {
+      atDebounceTimer = null
+      void runSlashCompletionAfterCache(context, requestId)
+    }, 80)
+    return
+  }
+
+  const cwd = props.threadCwd.trim()
+  if (!cwd) {
+    atCompleteRequestId.value += 1
+    const items = fallbackAtHints(context.query)
+    if (items.length === 0) {
+      closeTriggerMenu()
+      return
+    }
+    triggerSuggestions.value = items
+    triggerActiveIndex.value = 0
+    triggerMenuOpen.value = true
+    return
+  }
+
+  clearAtDebounce()
+  atCompleteRequestId.value += 1
+  const requestId = atCompleteRequestId.value
+  triggerMenuOpen.value = false
+  atDebounceTimer = window.setTimeout(() => {
+    atDebounceTimer = null
+    void runAtPathCompletion(context, requestId)
+  }, 120)
+}
+
+function applyTriggerSuggestion(index: number): void {
+  const el = messageInputRef.value
+  const range = triggerTokenRange.value
+  const item = triggerSuggestions.value[index]
+  if (!el || !range || !item) return
+
+  const before = draft.value.slice(0, range.start)
+  const after = draft.value.slice(range.end)
+  draft.value = `${before}${item.insertText}${after}`
+
+  const drillIntoDir = triggerChar.value === '@' && item.isDirectory === true
+  if (drillIntoDir) {
+    clearAtDebounce()
+    atCompleteRequestId.value += 1
+    triggerSuggestions.value = []
+    triggerActiveIndex.value = 0
+    triggerMenuOpen.value = true
+  } else {
+    closeTriggerMenu()
+  }
+
+  void nextTick(() => {
+    const nextCaret = before.length + item.insertText.length
+    el.focus()
+    el.setSelectionRange(nextCaret, nextCaret)
+    adjustComposerTextareaHeight()
+    if (drillIntoDir) {
+      refreshTriggerSuggestions()
+    }
+  })
+}
 
 function createImageId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -572,7 +952,42 @@ function onCompositionEnd(): void {
   }, 0)
 }
 
+function onDraftInput(): void {
+  refreshTriggerSuggestions()
+}
+
+function onDraftCursorMove(event: KeyboardEvent): void {
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'Enter' || event.key === 'Tab') {
+    return
+  }
+  refreshTriggerSuggestions()
+}
+
 function onInputKeydown(event: KeyboardEvent): void {
+  if (triggerMenuOpen.value && triggerSuggestions.value.length > 0) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      triggerActiveIndex.value = (triggerActiveIndex.value + 1) % triggerSuggestions.value.length
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      triggerActiveIndex.value =
+        (triggerActiveIndex.value - 1 + triggerSuggestions.value.length) % triggerSuggestions.value.length
+      return
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      event.preventDefault()
+      applyTriggerSuggestion(triggerActiveIndex.value)
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeTriggerMenu()
+      return
+    }
+  }
+
   if (event.key !== 'Enter') return
   if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return
   if (event.isComposing || event.keyCode === 229 || isComposingText.value || justEndedComposition.value) {
@@ -596,6 +1011,7 @@ function onSubmit(): void {
   const text = draft.value.trim()
   if (!canSubmit.value) return
   emit('submit', { text, images: images.value })
+  closeTriggerMenu()
   draft.value = ''
   images.value = []
   imageError.value = ''
@@ -628,6 +1044,7 @@ watch(
     worktreeStatusText.value = ''
     speech.stop()
     speech.clearError()
+    closeTriggerMenu()
     draft.value = ''
     images.value = []
     imageError.value = ''
@@ -654,10 +1071,18 @@ watch(
 
 onMounted(() => {
   void nextTick(() => adjustComposerTextareaHeight())
+  window.addEventListener('resize', onWindowRelayoutForTriggerMenu)
+  window.addEventListener('scroll', onWindowRelayoutForTriggerMenu, true)
+})
+
+onBeforeUnmount(() => {
+  clearAtDebounce()
 })
 
 onUnmounted(() => {
   clearWorktreeStatusTimer()
+  window.removeEventListener('resize', onWindowRelayoutForTriggerMenu)
+  window.removeEventListener('scroll', onWindowRelayoutForTriggerMenu, true)
 })
 </script>
 
@@ -673,7 +1098,7 @@ onUnmounted(() => {
 }
 
 .thread-composer-message-row {
-  @apply w-full min-w-0;
+  @apply relative w-full min-w-0;
 }
 
 .thread-composer-message-row .thread-composer-input {
@@ -706,6 +1131,34 @@ onUnmounted(() => {
 
 .thread-composer-input[readonly] {
   @apply cursor-default;
+}
+
+.thread-composer-trigger-menu {
+  @apply absolute left-0 right-0 z-20 flex max-h-[min(13rem,calc(100dvh-5rem))] min-h-0 flex-col overflow-y-auto overflow-x-hidden rounded-lg border border-zinc-200 bg-white p-1 shadow-lg;
+}
+
+.thread-composer-trigger-menu:not(.thread-composer-trigger-menu--flip-up) {
+  @apply top-full mt-1;
+}
+
+.thread-composer-trigger-menu--flip-up {
+  @apply bottom-full mb-1;
+}
+
+.thread-composer-trigger-item {
+  @apply flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-zinc-700 hover:bg-zinc-100;
+}
+
+.thread-composer-trigger-item--active {
+  @apply bg-zinc-100;
+}
+
+.thread-composer-trigger-item-label {
+  @apply min-w-0 max-w-[min(50%,11rem)] shrink truncate font-mono text-xs text-zinc-900;
+}
+
+.thread-composer-trigger-item-desc {
+  @apply min-w-0 flex-1 truncate text-right text-[11px] text-zinc-500;
 }
 
 .thread-composer-image-list {
@@ -744,10 +1197,6 @@ onUnmounted(() => {
   @apply animate-pulse;
 }
 
-.thread-composer-ios-voice-note {
-  @apply mt-2 text-xs leading-snug text-zinc-500;
-}
-
 /* Match .thread-composer-shell horizontal padding (p-3) so worktree aligns with model row and permission with send */
 .thread-composer-bottom-bar {
   @apply mt-1 w-full min-w-0 px-3;
@@ -762,7 +1211,7 @@ onUnmounted(() => {
 }
 
 .thread-composer-new-worktree {
-  @apply inline-flex h-8 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2.5 text-xs font-medium text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-zinc-600;
+  @apply inline-flex h-8 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2.5 text-sm font-medium text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-zinc-600;
 }
 
 .thread-composer-new-worktree-icon {

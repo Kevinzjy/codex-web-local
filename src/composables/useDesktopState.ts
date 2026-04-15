@@ -1,6 +1,7 @@
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   archiveThread,
+  getAccountInfo,
   getAccountRateLimits,
   getAvailableModelIds,
   getCurrentModelConfig,
@@ -12,6 +13,7 @@ import {
   replyToServerRequest,
   getThreadGroups,
   getThreadMessages,
+  readEffectiveConfig,
   resumeThread,
   forkThread,
   setThreadName as setThreadNameApi,
@@ -19,6 +21,8 @@ import {
   subscribeCodexNotifications,
   startThreadTurn,
   type RpcNotification,
+  type ThreadFlagSyncEntry,
+  type ThreadRunStateEntry,
 } from '../api/codexGateway'
 import type {
   GetAccountRateLimitsResponse,
@@ -29,6 +33,9 @@ import {
   mergeCodexSessionCache,
   persistModelPrefsFromState,
 } from '../utils/codexSessionCache'
+import { tryParseBareSlashCommand } from '../utils/slashCommandParse'
+import { formatSlashStatusCardText, selectRateLimitSnapshotFromPayload } from '../utils/slashStatusFormat'
+import { isThreadReadNotMaterializedError } from '../api/codexErrors'
 import type {
   ReasoningEffort,
   ThreadPermissionMode,
@@ -78,6 +85,9 @@ const PROJECT_DISPLAY_NAME_STORAGE_KEY = 'codex-web-local.project-display-name.v
 const PROJECT_CWD_STORAGE_KEY = 'codex-web-local.project-cwd.v1'
 const THREAD_DISPLAY_NAME_STORAGE_KEY = 'codex-web-local.thread-display-name.v1'
 const MANUAL_UNREAD_STORAGE_KEY = 'codex-web-local.manual-unread.v1'
+const MANUAL_UNREAD_SYNC_STORAGE_KEY = 'codex-web-local.manual-unread-sync.v1'
+const EVENT_UNREAD_SYNC_STORAGE_KEY = 'codex-web-local.event-unread-sync.v1'
+const THREAD_RUN_STATE_STORAGE_KEY = 'codex-web-local.thread-run-state-sync.v1'
 const AUTO_REFRESH_ENABLED_STORAGE_KEY = 'codex-web-local.auto-refresh-enabled.v1'
 const EVENT_SYNC_DEBOUNCE_MS = 220
 const AUTO_REFRESH_INTERVAL_MS = 4000
@@ -92,6 +102,32 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
+}
+
+const THREAD_READ_MATERIALIZE_MAX_ATTEMPTS = 24
+const THREAD_READ_MATERIALIZE_RETRY_GAP_MS = 350
+
+/**
+ * In production, thread/read may briefly fail with "not materialized yet" while the session warms up.
+ * Retry silently; in dev, surface the error immediately for debugging.
+ */
+async function getThreadMessagesWithProdWarmupRetry(threadId: string): Promise<UiMessage[]> {
+  if (import.meta.env.DEV) {
+    return getThreadMessages(threadId)
+  }
+  for (let attempt = 0; attempt < THREAD_READ_MATERIALIZE_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await getThreadMessages(threadId)
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      if (isThreadReadNotMaterializedError(msg) && attempt < THREAD_READ_MATERIALIZE_MAX_ATTEMPTS - 1) {
+        await sleepMs(THREAD_READ_MATERIALIZE_RETRY_GAP_MS)
+        continue
+      }
+      throw error
+    }
+  }
+  throw new Error('thread/read retry loop exited unexpectedly')
 }
 
 async function retryCodexFetch<T>(operation: () => Promise<T>): Promise<T> {
@@ -127,6 +163,181 @@ function loadReadStateMap(): Record<string, string> {
 function saveReadStateMap(state: Record<string, string>): void {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(READ_STATE_STORAGE_KEY, JSON.stringify(state))
+}
+
+function mergeReadStateByThreadId(
+  local: Record<string, string>,
+  remote: Record<string, string>,
+): Record<string, string> {
+  const keys = new Set([...Object.keys(local), ...Object.keys(remote)])
+  const next: Record<string, string> = {}
+  for (const threadId of keys) {
+    const a = local[threadId]?.trim() ?? ''
+    const b = remote[threadId]?.trim() ?? ''
+    if (!a && !b) continue
+    if (!a) {
+      next[threadId] = b
+    } else if (!b) {
+      next[threadId] = a
+    } else {
+      next[threadId] = a >= b ? a : b
+    }
+  }
+  return next
+}
+
+function areReadStateMapsEqual(first: Record<string, string>, second: Record<string, string>): boolean {
+  const keys = new Set([...Object.keys(first), ...Object.keys(second)])
+  for (const k of keys) {
+    if ((first[k] ?? '') !== (second[k] ?? '')) return false
+  }
+  return true
+}
+
+function migrateLegacyManualBoolsToSync(legacy: Record<string, boolean>): Record<string, ThreadFlagSyncEntry> {
+  const out: Record<string, ThreadFlagSyncEntry> = {}
+  for (const [tid, v] of Object.entries(legacy)) {
+    if (v === true) {
+      out[tid] = { value: true, bumpMs: 0 }
+    }
+  }
+  return out
+}
+
+function loadFlagSyncRecord(storageKey: string): Record<string, ThreadFlagSyncEntry> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(storageKey)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const record: Record<string, ThreadFlagSyncEntry> = {}
+    for (const [key, rawEntry] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof key !== 'string' || key.length === 0) continue
+      if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) continue
+      const e = rawEntry as Record<string, unknown>
+      const bumpMs = typeof e.bumpMs === 'number' && Number.isFinite(e.bumpMs) ? e.bumpMs : 0
+      if (e.value === true) {
+        record[key] = { value: true, bumpMs }
+      } else if (e.value === false) {
+        record[key] = { value: false, bumpMs }
+      }
+    }
+    return record
+  } catch {
+    return {}
+  }
+}
+
+function saveFlagSyncRecord(storageKey: string, record: Record<string, ThreadFlagSyncEntry>): void {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(storageKey, JSON.stringify(record))
+}
+
+function loadRunStateRecord(storageKey: string): Record<string, ThreadRunStateEntry> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(storageKey)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const record: Record<string, ThreadRunStateEntry> = {}
+    for (const [key, rawEntry] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof key !== 'string' || key.length === 0) continue
+      if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) continue
+      const e = rawEntry as Record<string, unknown>
+      const bumpMs = typeof e.bumpMs === 'number' && Number.isFinite(e.bumpMs) ? e.bumpMs : 0
+      if (e.turnId === null) {
+        record[key] = { turnId: null, bumpMs }
+      } else if (typeof e.turnId === 'string' && e.turnId.length > 0) {
+        record[key] = { turnId: e.turnId, bumpMs }
+      }
+    }
+    return record
+  } catch {
+    return {}
+  }
+}
+
+function saveRunStateRecord(storageKey: string, record: Record<string, ThreadRunStateEntry>): void {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(storageKey, JSON.stringify(record))
+}
+
+function mergeFlagSyncByThreadId(
+  local: Record<string, ThreadFlagSyncEntry>,
+  remote: Record<string, ThreadFlagSyncEntry>,
+): Record<string, ThreadFlagSyncEntry> {
+  const keys = new Set([...Object.keys(local), ...Object.keys(remote)])
+  const next: Record<string, ThreadFlagSyncEntry> = {}
+  for (const tid of keys) {
+    const a = local[tid]
+    const b = remote[tid]
+    if (!a && !b) continue
+    if (!a) {
+      next[tid] = b!
+      continue
+    }
+    if (!b) {
+      next[tid] = a
+      continue
+    }
+    next[tid] = a.bumpMs >= b.bumpMs ? a : b
+  }
+  return next
+}
+
+function mergeThreadRunStateMap(
+  local: Record<string, ThreadRunStateEntry>,
+  remote: Record<string, ThreadRunStateEntry>,
+): Record<string, ThreadRunStateEntry> {
+  const keys = new Set([...Object.keys(local), ...Object.keys(remote)])
+  const next: Record<string, ThreadRunStateEntry> = {}
+  for (const tid of keys) {
+    const a = local[tid]
+    const b = remote[tid]
+    if (!a && !b) continue
+    if (!a) {
+      next[tid] = b!
+      continue
+    }
+    if (!b) {
+      next[tid] = a
+      continue
+    }
+    next[tid] = a.bumpMs >= b.bumpMs ? a : b
+  }
+  return next
+}
+
+function areFlagSyncMapsEqual(
+  first: Record<string, ThreadFlagSyncEntry>,
+  second: Record<string, ThreadFlagSyncEntry>,
+): boolean {
+  const keys = new Set([...Object.keys(first), ...Object.keys(second)])
+  for (const k of keys) {
+    const a = first[k]
+    const b = second[k]
+    if (!a && !b) continue
+    if (!a || !b) return false
+    if (a.value !== b.value || a.bumpMs !== b.bumpMs) return false
+  }
+  return true
+}
+
+function areRunStateMapsEqual(
+  first: Record<string, ThreadRunStateEntry>,
+  second: Record<string, ThreadRunStateEntry>,
+): boolean {
+  const keys = new Set([...Object.keys(first), ...Object.keys(second)])
+  for (const k of keys) {
+    const a = first[k]
+    const b = second[k]
+    if (!a && !b) continue
+    if (!a || !b) return false
+    if (a.turnId !== b.turnId || a.bumpMs !== b.bumpMs) return false
+  }
+  return true
 }
 
 function loadAutoRefreshEnabled(): boolean {
@@ -317,7 +528,10 @@ function serializeDesktopChatSlice(
   order: string[],
   display: Record<string, string>,
   projectCwd: Record<string, string>,
-  unread: Record<string, boolean>,
+  manualUnreadSync: Record<string, ThreadFlagSyncEntry>,
+  eventUnreadSync: Record<string, ThreadFlagSyncEntry>,
+  threadRunState: Record<string, ThreadRunStateEntry>,
+  readState: Record<string, string>,
   permissionModes: Record<string, ThreadPermissionMode>,
   fullAccessAck: Record<string, boolean>,
 ): string {
@@ -325,13 +539,16 @@ function serializeDesktopChatSlice(
     projectOrder: order,
     projectDisplayNames: display,
     projectCwdByProjectName: projectCwd,
-    manualUnreadByThreadId: unread,
+    manualUnreadSyncByThreadId: manualUnreadSync,
+    eventUnreadSyncByThreadId: eventUnreadSync,
+    threadRunStateByThreadId: threadRunState,
+    readStateByThreadId: readState,
     threadPermissionModeByThreadId: permissionModes,
     threadFullAccessAcknowledgedByThreadId: fullAccessAck,
   })
 }
 
-const EMPTY_DESKTOP_CHAT_SLICE = serializeDesktopChatSlice([], {}, {}, {}, {}, {})
+const EMPTY_DESKTOP_CHAT_SLICE = serializeDesktopChatSlice([], {}, {}, {}, {}, {}, {}, {}, {})
 
 function mergeProjectOrder(previousOrder: string[], incomingGroups: UiProjectGroup[]): string[] {
   const nextOrder = [...previousOrder]
@@ -682,12 +899,21 @@ export function useDesktopState() {
   const sourceGroups = ref<UiProjectGroup[]>([])
   const selectedThreadId = ref(loadSelectedThreadId())
   const persistedMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
+  /** User-issued slash commands handled in the web UI (not sent as model turns), e.g. /status */
+  const clientSlashMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
   const liveAgentMessagesByThreadId = ref<Record<string, UiMessage[]>>({})
   const liveReasoningTextByThreadId = ref<Record<string, string>>({})
   const inProgressById = ref<Record<string, boolean>>({})
   /** Thread ids created locally that are not yet returned by thread list API (can lag several seconds). */
   const threadIdsAwaitingSidebar = ref<Set<string>>(new Set())
-  const eventUnreadByThreadId = ref<Record<string, boolean>>({})
+  const manualUnreadSyncByThreadId = ref<Record<string, ThreadFlagSyncEntry>>(
+    mergeFlagSyncByThreadId(
+      migrateLegacyManualBoolsToSync(loadBooleanRecord(MANUAL_UNREAD_STORAGE_KEY)),
+      loadFlagSyncRecord(MANUAL_UNREAD_SYNC_STORAGE_KEY),
+    ),
+  )
+  const eventUnreadSyncByThreadId = ref<Record<string, ThreadFlagSyncEntry>>(loadFlagSyncRecord(EVENT_UNREAD_SYNC_STORAGE_KEY))
+  const threadRunStateByThreadId = ref<Record<string, ThreadRunStateEntry>>(loadRunStateRecord(THREAD_RUN_STATE_STORAGE_KEY))
   const availableModelIds = ref<string[]>([])
   const selectedModelId = ref('')
   const selectedReasoningEffort = ref<ReasoningEffort | ''>('medium')
@@ -703,7 +929,8 @@ export function useDesktopState() {
   const projectDisplayNameById = ref<Record<string, string>>(loadProjectDisplayNames())
   const projectCwdByProjectName = ref<Record<string, string>>(loadStringRecord(PROJECT_CWD_STORAGE_KEY))
   const threadDisplayNameById = ref<Record<string, string>>(loadStringRecord(THREAD_DISPLAY_NAME_STORAGE_KEY))
-  const manualUnreadByThreadId = ref<Record<string, boolean>>(loadBooleanRecord(MANUAL_UNREAD_STORAGE_KEY))
+  /** True while applying chat-state from server to avoid feedback loops with push + watch. */
+  const isApplyingRemoteDesktopChatState = ref(false)
   const threadPermissionModeByThreadId = ref<Record<string, ThreadPermissionMode>>({})
   /** Permission for the first message on the home / new-thread route (no thread id yet). */
   const newThreadPermissionMode = ref<ThreadPermissionMode>('default')
@@ -824,10 +1051,12 @@ export function useDesktopState() {
     const persisted = persistedMessagesByThreadId.value[threadId] ?? []
     const liveAgent = liveAgentMessagesByThreadId.value[threadId] ?? []
     const combined = persisted === liveAgent ? persisted : [...persisted, ...liveAgent]
+    const slash = clientSlashMessagesByThreadId.value[threadId] ?? []
+    const withSlash = slash.length > 0 ? [...combined, ...slash] : combined
 
     const summary = turnSummaryByThreadId.value[threadId]
-    if (!summary) return combined
-    return insertTurnSummaryMessage(combined, summary)
+    if (!summary) return withSlash
+    return insertTurnSummaryMessage(withSlash, summary)
   })
 
   function setSelectedThreadId(nextThreadId: string): void {
@@ -971,11 +1200,15 @@ export function useDesktopState() {
     const flaggedGroups: UiProjectGroup[] = sourceGroups.value.map((group) => ({
       projectName: group.projectName,
       threads: group.threads.map((thread) => {
-        const inProgress = inProgressById.value[thread.id] === true
-        const manualUnread = manualUnreadByThreadId.value[thread.id] === true
+        const runSync = threadRunStateByThreadId.value[thread.id]
+        const remoteRunning =
+          runSync != null && runSync.turnId != null && runSync.turnId.length > 0
+        const localRunning = inProgressById.value[thread.id] === true
+        const inProgress = localRunning || remoteRunning
+        const manualUnread = manualUnreadSyncByThreadId.value[thread.id]?.value === true
         const isSelected = selectedThreadId.value === thread.id
         const lastReadIso = readStateByThreadId.value[thread.id]
-        const unreadByEvent = eventUnreadByThreadId.value[thread.id] === true
+        const unreadByEvent = eventUnreadSyncByThreadId.value[thread.id]?.value === true
         const unread = !inProgress && (manualUnread || (!isSelected && (unreadByEvent || lastReadIso !== thread.updatedAtIso)))
         const displayName = threadDisplayNameById.value[thread.id]?.trim()
 
@@ -1019,17 +1252,27 @@ export function useDesktopState() {
     resumedThreadById.value = pruneThreadStateMap(resumedThreadById.value, activeThreadIds)
     persistedMessagesByThreadId.value = pruneThreadStateMap(persistedMessagesByThreadId.value, activeThreadIds)
     liveAgentMessagesByThreadId.value = pruneThreadStateMap(liveAgentMessagesByThreadId.value, activeThreadIds)
+    clientSlashMessagesByThreadId.value = pruneThreadStateMap(clientSlashMessagesByThreadId.value, activeThreadIds)
     liveReasoningTextByThreadId.value = pruneThreadStateMap(liveReasoningTextByThreadId.value, activeThreadIds)
     turnSummaryByThreadId.value = pruneThreadStateMap(turnSummaryByThreadId.value, activeThreadIds)
     turnActivityByThreadId.value = pruneThreadStateMap(turnActivityByThreadId.value, activeThreadIds)
     turnErrorByThreadId.value = pruneThreadStateMap(turnErrorByThreadId.value, activeThreadIds)
     contextUsagePercentByThreadId.value = pruneThreadStateMap(contextUsagePercentByThreadId.value, activeThreadIds)
     activeTurnIdByThreadId.value = pruneThreadStateMap(activeTurnIdByThreadId.value, activeThreadIds)
-    eventUnreadByThreadId.value = pruneThreadStateMap(eventUnreadByThreadId.value, activeThreadIds)
-    const nextManualUnread = pruneThreadStateMap(manualUnreadByThreadId.value, activeThreadIds)
-    if (nextManualUnread !== manualUnreadByThreadId.value) {
-      manualUnreadByThreadId.value = nextManualUnread
-      saveBooleanRecord(MANUAL_UNREAD_STORAGE_KEY, nextManualUnread)
+    const nextEventUnreadSync = pruneThreadStateMap(eventUnreadSyncByThreadId.value, activeThreadIds)
+    if (nextEventUnreadSync !== eventUnreadSyncByThreadId.value) {
+      eventUnreadSyncByThreadId.value = nextEventUnreadSync
+      saveFlagSyncRecord(EVENT_UNREAD_SYNC_STORAGE_KEY, nextEventUnreadSync)
+    }
+    const nextManualUnreadSync = pruneThreadStateMap(manualUnreadSyncByThreadId.value, activeThreadIds)
+    if (nextManualUnreadSync !== manualUnreadSyncByThreadId.value) {
+      manualUnreadSyncByThreadId.value = nextManualUnreadSync
+      saveFlagSyncRecord(MANUAL_UNREAD_SYNC_STORAGE_KEY, nextManualUnreadSync)
+    }
+    const nextThreadRunState = pruneThreadStateMap(threadRunStateByThreadId.value, activeThreadIds)
+    if (nextThreadRunState !== threadRunStateByThreadId.value) {
+      threadRunStateByThreadId.value = nextThreadRunState
+      saveRunStateRecord(THREAD_RUN_STATE_STORAGE_KEY, nextThreadRunState)
     }
     const nextPerm = pruneThreadStateMap(threadPermissionModeByThreadId.value, activeThreadIds)
     if (nextPerm !== threadPermissionModeByThreadId.value) {
@@ -1063,13 +1306,17 @@ export function useDesktopState() {
       [threadId]: thread.updatedAtIso,
     }
     saveReadStateMap(readStateByThreadId.value)
-    if (eventUnreadByThreadId.value[threadId]) {
-      eventUnreadByThreadId.value = omitKey(eventUnreadByThreadId.value, threadId)
+    const flagBumpMs = Date.now()
+    manualUnreadSyncByThreadId.value = {
+      ...manualUnreadSyncByThreadId.value,
+      [threadId]: { value: false, bumpMs: flagBumpMs },
     }
-    if (manualUnreadByThreadId.value[threadId]) {
-      manualUnreadByThreadId.value = omitKey(manualUnreadByThreadId.value, threadId)
-      saveBooleanRecord(MANUAL_UNREAD_STORAGE_KEY, manualUnreadByThreadId.value)
+    saveFlagSyncRecord(MANUAL_UNREAD_SYNC_STORAGE_KEY, manualUnreadSyncByThreadId.value)
+    eventUnreadSyncByThreadId.value = {
+      ...eventUnreadSyncByThreadId.value,
+      [threadId]: { value: false, bumpMs: flagBumpMs },
     }
+    saveFlagSyncRecord(EVENT_UNREAD_SYNC_STORAGE_KEY, eventUnreadSyncByThreadId.value)
     applyThreadFlags()
   }
 
@@ -1102,17 +1349,32 @@ export function useDesktopState() {
     } else {
       inProgressById.value = omitKey(inProgressById.value, threadId)
     }
+    const bumpMs = Date.now()
+    if (nextInProgress) {
+      const tid = activeTurnIdByThreadId.value[threadId]?.trim() || 'pending'
+      threadRunStateByThreadId.value = {
+        ...threadRunStateByThreadId.value,
+        [threadId]: { turnId: tid.length > 0 ? tid : 'pending', bumpMs },
+      }
+    } else {
+      threadRunStateByThreadId.value = {
+        ...threadRunStateByThreadId.value,
+        [threadId]: { turnId: null, bumpMs },
+      }
+    }
+    saveRunStateRecord(THREAD_RUN_STATE_STORAGE_KEY, threadRunStateByThreadId.value)
     applyThreadFlags()
   }
 
   function markThreadUnreadByEvent(threadId: string): void {
     if (!threadId) return
     if (threadId === selectedThreadId.value) return
-    if (eventUnreadByThreadId.value[threadId] === true) return
-    eventUnreadByThreadId.value = {
-      ...eventUnreadByThreadId.value,
-      [threadId]: true,
+    if (eventUnreadSyncByThreadId.value[threadId]?.value === true) return
+    eventUnreadSyncByThreadId.value = {
+      ...eventUnreadSyncByThreadId.value,
+      [threadId]: { value: true, bumpMs: Date.now() },
     }
+    saveFlagSyncRecord(EVENT_UNREAD_SYNC_STORAGE_KEY, eventUnreadSyncByThreadId.value)
     applyThreadFlags()
   }
 
@@ -1727,8 +1989,22 @@ export function useDesktopState() {
       setTurnSummaryForThread(startedTurn.threadId, null)
       setTurnErrorForThread(startedTurn.threadId, null)
       setThreadInProgress(startedTurn.threadId, true)
-      if (eventUnreadByThreadId.value[startedTurn.threadId]) {
-        eventUnreadByThreadId.value = omitKey(eventUnreadByThreadId.value, startedTurn.threadId)
+      if (eventUnreadSyncByThreadId.value[startedTurn.threadId]?.value === true) {
+        const b = Date.now()
+        eventUnreadSyncByThreadId.value = {
+          ...eventUnreadSyncByThreadId.value,
+          [startedTurn.threadId]: { value: false, bumpMs: b },
+        }
+        saveFlagSyncRecord(EVENT_UNREAD_SYNC_STORAGE_KEY, eventUnreadSyncByThreadId.value)
+      }
+      const curRun = threadRunStateByThreadId.value[startedTurn.threadId]
+      if (curRun?.turnId === 'pending') {
+        threadRunStateByThreadId.value = {
+          ...threadRunStateByThreadId.value,
+          [startedTurn.threadId]: { turnId: startedTurn.turnId, bumpMs: Date.now() },
+        }
+        saveRunStateRecord(THREAD_RUN_STATE_STORAGE_KEY, threadRunStateByThreadId.value)
+        schedulePushDesktopChatState()
       }
     }
 
@@ -2049,7 +2325,7 @@ export function useDesktopState() {
         }
       }
 
-      const nextMessages = await getThreadMessages(threadId)
+      const nextMessages = await getThreadMessagesWithProdWarmupRetry(threadId)
       const previousPersisted = persistedMessagesByThreadId.value[threadId] ?? []
       const mergedMessages = mergeMessages(previousPersisted, nextMessages, {
         preserveMissing: options.silent === true,
@@ -2118,10 +2394,98 @@ export function useDesktopState() {
     }
   }
 
+  function appendClientSlashMessages(threadId: string, next: UiMessage[]): void {
+    const tid = threadId.trim()
+    if (!tid) return
+    const prev = clientSlashMessagesByThreadId.value[tid] ?? []
+    clientSlashMessagesByThreadId.value = {
+      ...clientSlashMessagesByThreadId.value,
+      [tid]: [...prev, ...next],
+    }
+  }
+
+  function newClientSlashMessageId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
+    return `slash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  }
+
+  async function handleClientSlashStatusCommand(threadId: string): Promise<void> {
+    const userMsg: UiMessage = {
+      id: newClientSlashMessageId(),
+      role: 'user',
+      text: '/status',
+      messageType: 'clientSlash.user',
+    }
+    appendClientSlashMessages(threadId, [userMsg])
+    shouldAutoScrollOnNextAgentEvent = true
+
+    try {
+      if (resumedThreadById.value[threadId] !== true) {
+        await resumeThread(threadId)
+        resumedThreadById.value = {
+          ...resumedThreadById.value,
+          [threadId]: true,
+        }
+      }
+
+      const [ratePayload, accountPayload, configPayload] = await Promise.all([
+        getAccountRateLimits(),
+        getAccountInfo(),
+        readEffectiveConfig(),
+      ])
+
+      const snapshot = selectRateLimitSnapshotFromPayload(ratePayload)
+      if (snapshot) {
+        accountRateLimits.value = snapshot
+        mergeCodexSessionCache({ rateLimits: snapshot })
+        accountRateLimitsError.value = ''
+      }
+
+      const cwd = selectedThread.value?.cwd?.trim() ?? ''
+      const perm = threadPermissionModeByThreadId.value[threadId] ?? 'default'
+
+      const statusText = formatSlashStatusCardText({
+        threadId,
+        cwd,
+        modelId: selectedModelId.value,
+        reasoningEffort: selectedReasoningEffort.value,
+        threadPermission: perm,
+        account: accountPayload.account ?? null,
+        ratePayload,
+        config: configPayload.config,
+      })
+
+      const assistantMsg: UiMessage = {
+        id: newClientSlashMessageId(),
+        role: 'assistant',
+        text: statusText,
+        messageType: 'clientSlash.status',
+      }
+      appendClientSlashMessages(threadId, [assistantMsg])
+    } catch (unknownError) {
+      const message = unknownError instanceof Error ? unknownError.message : 'Unknown error'
+      const assistantMsg: UiMessage = {
+        id: newClientSlashMessageId(),
+        role: 'assistant',
+        text: `Failed to load session status.\n\n${message}`,
+        messageType: 'clientSlash.status',
+      }
+      appendClientSlashMessages(threadId, [assistantMsg])
+    }
+  }
+
   async function sendMessageToSelectedThread(draft: UiComposerDraft): Promise<void> {
     const threadId = selectedThreadId.value
     const nextDraft = normalizeComposerDraft(draft)
     if (!threadId || isComposerDraftEmpty(nextDraft)) return
+
+    const bareSlash = tryParseBareSlashCommand(nextDraft.text)
+    if (nextDraft.images.length === 0 && bareSlash === 'status') {
+      await handleClientSlashStatusCommand(threadId)
+      return
+    }
 
     const perm = threadPermissionModeByThreadId.value[threadId] ?? 'default'
     if (
@@ -2252,6 +2616,7 @@ export function useDesktopState() {
         modelId || undefined,
         reasoningEffort || undefined,
         perm === 'full-access' ? 'full-access' : undefined,
+        selectedThread.value?.cwd?.trim() || undefined,
       )
 
       resumedThreadById.value = {
@@ -2332,11 +2697,11 @@ export function useDesktopState() {
   function markThreadUnreadById(threadId: string): void {
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) return
-    manualUnreadByThreadId.value = {
-      ...manualUnreadByThreadId.value,
-      [normalizedThreadId]: true,
+    manualUnreadSyncByThreadId.value = {
+      ...manualUnreadSyncByThreadId.value,
+      [normalizedThreadId]: { value: true, bumpMs: Date.now() },
     }
-    saveBooleanRecord(MANUAL_UNREAD_STORAGE_KEY, manualUnreadByThreadId.value)
+    saveFlagSyncRecord(MANUAL_UNREAD_SYNC_STORAGE_KEY, manualUnreadSyncByThreadId.value)
     applyThreadFlags()
   }
 
@@ -2419,6 +2784,39 @@ export function useDesktopState() {
     applyThreadFlags()
   }
 
+  async function mergeRemoteThreadUiFromServer(): Promise<void> {
+    if (typeof window === 'undefined') return
+    try {
+      const remote = await getChatState()
+      const mergedRead = mergeReadStateByThreadId(readStateByThreadId.value, remote.readStateByThreadId)
+      const mergedManual = mergeFlagSyncByThreadId(manualUnreadSyncByThreadId.value, remote.manualUnreadSyncByThreadId)
+      const mergedEvent = mergeFlagSyncByThreadId(eventUnreadSyncByThreadId.value, remote.eventUnreadSyncByThreadId)
+      const mergedRun = mergeThreadRunStateMap(threadRunStateByThreadId.value, remote.threadRunStateByThreadId)
+      if (
+        areReadStateMapsEqual(mergedRead, readStateByThreadId.value) &&
+        areFlagSyncMapsEqual(mergedManual, manualUnreadSyncByThreadId.value) &&
+        areFlagSyncMapsEqual(mergedEvent, eventUnreadSyncByThreadId.value) &&
+        areRunStateMapsEqual(mergedRun, threadRunStateByThreadId.value)
+      ) {
+        return
+      }
+      isApplyingRemoteDesktopChatState.value = true
+      readStateByThreadId.value = mergedRead
+      saveReadStateMap(mergedRead)
+      manualUnreadSyncByThreadId.value = mergedManual
+      saveFlagSyncRecord(MANUAL_UNREAD_SYNC_STORAGE_KEY, mergedManual)
+      eventUnreadSyncByThreadId.value = mergedEvent
+      saveFlagSyncRecord(EVENT_UNREAD_SYNC_STORAGE_KEY, mergedEvent)
+      threadRunStateByThreadId.value = mergedRun
+      saveRunStateRecord(THREAD_RUN_STATE_STORAGE_KEY, mergedRun)
+      applyThreadFlags()
+    } catch {
+      // ignore transient bridge failures
+    } finally {
+      isApplyingRemoteDesktopChatState.value = false
+    }
+  }
+
   async function syncThreadStatus(): Promise<void> {
     if (isPolling.value) return
     isPolling.value = true
@@ -2446,6 +2844,7 @@ export function useDesktopState() {
       // ignore poll failures and keep last known state
     } finally {
       isPolling.value = false
+      void mergeRemoteThreadUiFromServer()
     }
   }
 
@@ -2620,7 +3019,6 @@ export function useDesktopState() {
 
   let desktopChatStateSyncTimer: number | null = null
   let lastPushedDesktopChatState = ''
-  const isApplyingRemoteDesktopChatState = ref(false)
 
   function schedulePushDesktopChatState(): void {
     if (typeof window === 'undefined') return
@@ -2639,7 +3037,10 @@ export function useDesktopState() {
       projectOrder.value,
       projectDisplayNameById.value,
       projectCwdByProjectName.value,
-      manualUnreadByThreadId.value,
+      manualUnreadSyncByThreadId.value,
+      eventUnreadSyncByThreadId.value,
+      threadRunStateByThreadId.value,
+      readStateByThreadId.value,
       threadPermissionModeByThreadId.value,
       threadFullAccessAcknowledgedByThreadId.value,
     )
@@ -2649,15 +3050,43 @@ export function useDesktopState() {
         projectOrder: [...projectOrder.value],
         projectDisplayNames: { ...projectDisplayNameById.value },
         projectCwdByProjectName: { ...projectCwdByProjectName.value },
-        manualUnreadByThreadId: { ...manualUnreadByThreadId.value },
+        manualUnreadSyncByThreadId: { ...manualUnreadSyncByThreadId.value },
+        eventUnreadSyncByThreadId: { ...eventUnreadSyncByThreadId.value },
+        threadRunStateByThreadId: { ...threadRunStateByThreadId.value },
+        readStateByThreadId: { ...readStateByThreadId.value },
         threadPermissionModeByThreadId: { ...threadPermissionModeByThreadId.value },
         threadFullAccessAcknowledgedByThreadId: { ...threadFullAccessAcknowledgedByThreadId.value },
       })
+      isApplyingRemoteDesktopChatState.value = true
+      try {
+        readStateByThreadId.value = mergeReadStateByThreadId(readStateByThreadId.value, saved.readStateByThreadId)
+        saveReadStateMap(readStateByThreadId.value)
+        manualUnreadSyncByThreadId.value = mergeFlagSyncByThreadId(
+          manualUnreadSyncByThreadId.value,
+          saved.manualUnreadSyncByThreadId,
+        )
+        saveFlagSyncRecord(MANUAL_UNREAD_SYNC_STORAGE_KEY, manualUnreadSyncByThreadId.value)
+        eventUnreadSyncByThreadId.value = mergeFlagSyncByThreadId(
+          eventUnreadSyncByThreadId.value,
+          saved.eventUnreadSyncByThreadId,
+        )
+        saveFlagSyncRecord(EVENT_UNREAD_SYNC_STORAGE_KEY, eventUnreadSyncByThreadId.value)
+        threadRunStateByThreadId.value = mergeThreadRunStateMap(
+          threadRunStateByThreadId.value,
+          saved.threadRunStateByThreadId,
+        )
+        saveRunStateRecord(THREAD_RUN_STATE_STORAGE_KEY, threadRunStateByThreadId.value)
+      } finally {
+        isApplyingRemoteDesktopChatState.value = false
+      }
       lastPushedDesktopChatState = serializeDesktopChatSlice(
         saved.projectOrder,
         saved.projectDisplayNames,
         saved.projectCwdByProjectName,
-        saved.manualUnreadByThreadId,
+        saved.manualUnreadSyncByThreadId,
+        saved.eventUnreadSyncByThreadId,
+        saved.threadRunStateByThreadId,
+        saved.readStateByThreadId,
         saved.threadPermissionModeByThreadId,
         saved.threadFullAccessAcknowledgedByThreadId,
       )
@@ -2671,11 +3100,28 @@ export function useDesktopState() {
     isApplyingRemoteDesktopChatState.value = true
     try {
       const remote = await getChatState()
+      readStateByThreadId.value = mergeReadStateByThreadId(readStateByThreadId.value, remote.readStateByThreadId)
+      saveReadStateMap(readStateByThreadId.value)
+      manualUnreadSyncByThreadId.value = mergeFlagSyncByThreadId(
+        manualUnreadSyncByThreadId.value,
+        remote.manualUnreadSyncByThreadId,
+      )
+      saveFlagSyncRecord(MANUAL_UNREAD_SYNC_STORAGE_KEY, manualUnreadSyncByThreadId.value)
+      eventUnreadSyncByThreadId.value = mergeFlagSyncByThreadId(
+        eventUnreadSyncByThreadId.value,
+        remote.eventUnreadSyncByThreadId,
+      )
+      saveFlagSyncRecord(EVENT_UNREAD_SYNC_STORAGE_KEY, eventUnreadSyncByThreadId.value)
+      threadRunStateByThreadId.value = mergeThreadRunStateMap(
+        threadRunStateByThreadId.value,
+        remote.threadRunStateByThreadId,
+      )
+      saveRunStateRecord(THREAD_RUN_STATE_STORAGE_KEY, threadRunStateByThreadId.value)
+
       const hasDesktopRemote =
         remote.projectOrder.length > 0 ||
         Object.keys(remote.projectDisplayNames).length > 0 ||
         Object.keys(remote.projectCwdByProjectName).length > 0 ||
-        Object.keys(remote.manualUnreadByThreadId).length > 0 ||
         Object.keys(remote.threadPermissionModeByThreadId).length > 0 ||
         Object.keys(remote.threadFullAccessAcknowledgedByThreadId).length > 0
 
@@ -2683,19 +3129,20 @@ export function useDesktopState() {
         projectOrder.value = [...remote.projectOrder]
         projectDisplayNameById.value = { ...remote.projectDisplayNames }
         projectCwdByProjectName.value = { ...remote.projectCwdByProjectName }
-        manualUnreadByThreadId.value = { ...remote.manualUnreadByThreadId }
         threadPermissionModeByThreadId.value = { ...remote.threadPermissionModeByThreadId }
         threadFullAccessAcknowledgedByThreadId.value = { ...remote.threadFullAccessAcknowledgedByThreadId }
         saveProjectOrder(projectOrder.value)
         saveProjectDisplayNames(projectDisplayNameById.value)
         saveStringRecord(PROJECT_CWD_STORAGE_KEY, projectCwdByProjectName.value)
-        saveBooleanRecord(MANUAL_UNREAD_STORAGE_KEY, manualUnreadByThreadId.value)
         applyThreadFlags()
         lastPushedDesktopChatState = serializeDesktopChatSlice(
           projectOrder.value,
           projectDisplayNameById.value,
           projectCwdByProjectName.value,
-          manualUnreadByThreadId.value,
+          manualUnreadSyncByThreadId.value,
+          eventUnreadSyncByThreadId.value,
+          threadRunStateByThreadId.value,
+          readStateByThreadId.value,
           threadPermissionModeByThreadId.value,
           threadFullAccessAcknowledgedByThreadId.value,
         )
@@ -2706,7 +3153,10 @@ export function useDesktopState() {
         projectOrder.value,
         projectDisplayNameById.value,
         projectCwdByProjectName.value,
-        manualUnreadByThreadId.value,
+        manualUnreadSyncByThreadId.value,
+        eventUnreadSyncByThreadId.value,
+        threadRunStateByThreadId.value,
+        readStateByThreadId.value,
         threadPermissionModeByThreadId.value,
         threadFullAccessAcknowledgedByThreadId.value,
       )
@@ -2719,15 +3169,38 @@ export function useDesktopState() {
         projectOrder: [...projectOrder.value],
         projectDisplayNames: { ...projectDisplayNameById.value },
         projectCwdByProjectName: { ...projectCwdByProjectName.value },
-        manualUnreadByThreadId: { ...manualUnreadByThreadId.value },
+        manualUnreadSyncByThreadId: { ...manualUnreadSyncByThreadId.value },
+        eventUnreadSyncByThreadId: { ...eventUnreadSyncByThreadId.value },
+        threadRunStateByThreadId: { ...threadRunStateByThreadId.value },
+        readStateByThreadId: { ...readStateByThreadId.value },
         threadPermissionModeByThreadId: { ...threadPermissionModeByThreadId.value },
         threadFullAccessAcknowledgedByThreadId: { ...threadFullAccessAcknowledgedByThreadId.value },
       })
+      readStateByThreadId.value = mergeReadStateByThreadId(readStateByThreadId.value, saved.readStateByThreadId)
+      saveReadStateMap(readStateByThreadId.value)
+      manualUnreadSyncByThreadId.value = mergeFlagSyncByThreadId(
+        manualUnreadSyncByThreadId.value,
+        saved.manualUnreadSyncByThreadId,
+      )
+      saveFlagSyncRecord(MANUAL_UNREAD_SYNC_STORAGE_KEY, manualUnreadSyncByThreadId.value)
+      eventUnreadSyncByThreadId.value = mergeFlagSyncByThreadId(
+        eventUnreadSyncByThreadId.value,
+        saved.eventUnreadSyncByThreadId,
+      )
+      saveFlagSyncRecord(EVENT_UNREAD_SYNC_STORAGE_KEY, eventUnreadSyncByThreadId.value)
+      threadRunStateByThreadId.value = mergeThreadRunStateMap(
+        threadRunStateByThreadId.value,
+        saved.threadRunStateByThreadId,
+      )
+      saveRunStateRecord(THREAD_RUN_STATE_STORAGE_KEY, threadRunStateByThreadId.value)
       lastPushedDesktopChatState = serializeDesktopChatSlice(
         saved.projectOrder,
         saved.projectDisplayNames,
         saved.projectCwdByProjectName,
-        saved.manualUnreadByThreadId,
+        saved.manualUnreadSyncByThreadId,
+        saved.eventUnreadSyncByThreadId,
+        saved.threadRunStateByThreadId,
+        saved.readStateByThreadId,
         saved.threadPermissionModeByThreadId,
         saved.threadFullAccessAcknowledgedByThreadId,
       )
@@ -2736,13 +3209,26 @@ export function useDesktopState() {
         projectOrder.value,
         projectDisplayNameById.value,
         projectCwdByProjectName.value,
-        manualUnreadByThreadId.value,
+        manualUnreadSyncByThreadId.value,
+        eventUnreadSyncByThreadId.value,
+        threadRunStateByThreadId.value,
+        readStateByThreadId.value,
         threadPermissionModeByThreadId.value,
         threadFullAccessAcknowledgedByThreadId.value,
       )
     } finally {
       isApplyingRemoteDesktopChatState.value = false
     }
+
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') {
+        void mergeRemoteThreadUiFromServer()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    onUnmounted(() => {
+      document.removeEventListener('visibilitychange', onVisibility)
+    })
   })
 
   watch(
@@ -2750,7 +3236,10 @@ export function useDesktopState() {
       projectOrder,
       projectDisplayNameById,
       projectCwdByProjectName,
-      manualUnreadByThreadId,
+      manualUnreadSyncByThreadId,
+      eventUnreadSyncByThreadId,
+      threadRunStateByThreadId,
+      readStateByThreadId,
       threadPermissionModeByThreadId,
       threadFullAccessAcknowledgedByThreadId,
     ],

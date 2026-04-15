@@ -1,4 +1,4 @@
-import type { FsDirectoriesResponse, FsMkdirResponse } from '../types/fsDirectories'
+import type { FsCompleteResponse, FsDirectoriesResponse, FsMkdirResponse } from '../types/fsDirectories'
 
 export async function fetchFsDirectories(pathQuery: string): Promise<FsDirectoriesResponse> {
   const params = new URLSearchParams()
@@ -17,6 +17,23 @@ export async function fetchFsDirectories(pathQuery: string): Promise<FsDirectori
   }
 
   return payload as FsDirectoriesResponse
+}
+
+export async function fetchFsComplete(cwd: string, q: string): Promise<FsCompleteResponse> {
+  const params = new URLSearchParams()
+  params.set('cwd', cwd.trim())
+  params.set('q', q)
+
+  const response = await fetch(`/codex-api/fs/complete?${params.toString()}`)
+  const payload: unknown = await response.json().catch(() => ({}))
+  const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+
+  if (!response.ok) {
+    const message = typeof record.error === 'string' ? record.error : `HTTP ${String(response.status)}`
+    throw new Error(message)
+  }
+
+  return payload as FsCompleteResponse
 }
 
 export async function createFsDirectory(parentPath: string, name: string): Promise<FsMkdirResponse> {

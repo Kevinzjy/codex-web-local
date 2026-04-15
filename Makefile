@@ -17,6 +17,7 @@ SYSTEMD_USER_ENABLE ?= 1
 TARBALL := $(shell node -p "require('./package.json').name + '-' + require('./package.json').version + '.tgz'")
 
 test: node_modules/.bin/vite
+	npm run build
 	http_proxy=$(HTTP_PROXY_URL) https_proxy=$(HTTPS_PROXY_URL) all_proxy=$(ALL_PROXY_URL) npm run dev -- --host $(HOST) --port $(PORT)
 
 install: node_modules/.bin/vite

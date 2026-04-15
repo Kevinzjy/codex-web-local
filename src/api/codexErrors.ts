@@ -25,6 +25,15 @@ export class CodexApiError extends Error {
   }
 }
 
+/**
+ * True when thread/read fails because the session is not ready yet
+ * (common immediately after thread/start before the first user turn is persisted).
+ */
+export function isThreadReadNotMaterializedError(message: string): boolean {
+  const m = message.toLowerCase()
+  return m.includes('not materialized') && m.includes('includeturns')
+}
+
 export function extractErrorMessage(payload: unknown, fallback: string): string {
   const record = asRecord(payload)
   if (!record) return fallback

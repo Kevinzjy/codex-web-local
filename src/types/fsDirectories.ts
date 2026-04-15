@@ -13,3 +13,18 @@ export type FsDirectoriesResponse = {
 export type FsMkdirResponse = {
   path: string
 }
+
+export type FsEntryKind = 'file' | 'directory'
+
+export type FsEntry = {
+  name: string
+  path: string
+  kind: FsEntryKind
+}
+
+/** Directory listing for @ path completion (files + subfolders). */
+export type FsCompleteResponse = {
+  cwd: string
+  query: string
+  entries: FsEntry[]
+}

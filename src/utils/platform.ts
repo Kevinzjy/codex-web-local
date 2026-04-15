@@ -1,3 +1,9 @@
+/** True when the primary pointer is touch-like (typical phones and tablets). */
+export function isCoarsePointer(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.matchMedia('(pointer: coarse)').matches
+}
+
 /** True for iPhone / iPad / iPod (all iOS browsers use WebKit; Chrome is a shell). */
 export function isLikelyIOS(): boolean {
   if (typeof navigator === 'undefined') return false

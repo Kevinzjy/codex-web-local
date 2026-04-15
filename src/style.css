@@ -121,7 +121,9 @@ body {
 [data-theme='dark'] .thread-context-menu.thread-context-menu,
 [data-theme='dark'] .thread-type-menu-panel,
 [data-theme='dark'] .thread-type-menu-panel.thread-type-menu-panel,
-[data-theme='dark'] .directory-picker-dialog {
+[data-theme='dark'] .directory-picker-dialog,
+[data-theme='dark'] .thread-composer .thread-composer-trigger-menu,
+[data-theme='dark'] .thread-composer .thread-composer-trigger-menu.thread-composer-trigger-menu {
   border-color: #3a3d40;
   background: #1b1d1f;
   color: #f4f4f5;
@@ -187,11 +189,6 @@ body {
 
 [data-theme='dark'].directory-picker-root .directory-picker-empty {
   color: #a1a1aa;
-}
-
-[data-theme='dark'].directory-picker-root .directory-picker-folder-icon {
-  border-color: #71717a;
-  background: #27272a;
 }
 
 [data-theme='dark'].directory-picker-root .directory-picker-filter,
@@ -427,7 +424,8 @@ body {
 [data-theme='dark'] .project-menu-item,
 [data-theme='dark'] .thread-context-menu-item,
 [data-theme='dark'] .thread-type-menu-action-button,
-[data-theme='dark'] .thread-type-menu-option {
+[data-theme='dark'] .thread-type-menu-option,
+[data-theme='dark'] .thread-composer .thread-composer-trigger-item {
   color: #e5e7eb;
 }
 
@@ -437,8 +435,18 @@ body {
 [data-theme='dark'] .project-menu-item:hover,
 [data-theme='dark'] .thread-context-menu-item:hover,
 [data-theme='dark'] .thread-type-menu-action-button:hover,
-[data-theme='dark'] .thread-type-menu-option:hover {
+[data-theme='dark'] .thread-type-menu-option:hover,
+[data-theme='dark'] .thread-composer .thread-composer-trigger-item:hover,
+[data-theme='dark'] .thread-composer .thread-composer-trigger-item--active {
   background: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme='dark'] .thread-composer .thread-composer-trigger-item-label {
+  color: #f4f4f5;
+}
+
+[data-theme='dark'] .thread-composer .thread-composer-trigger-item-desc {
+  color: #a1a1aa;
 }
 
 [data-theme='dark'] .composer-dropdown-trigger--permission-full,
@@ -668,10 +676,6 @@ body {
   color: #d4d4d8;
 }
 
-[data-theme='dark'] .thread-composer-ios-voice-note.thread-composer-ios-voice-note {
-  color: #a1a1aa;
-}
-
 [data-theme='dark'] .thread-composer-submit,
 [data-theme='dark'] .thread-composer-stop,
 [data-theme='dark'] .composer-dropdown-add-submit,
@@ -731,6 +735,14 @@ body {
 
 [data-theme='dark'] .message-code-block-inner,
 [data-theme='dark'] .message-code-block-inner.message-code-block-inner {
+  color: #e8e8ea;
+}
+
+/* `/status` and similar monospace panels (ThreadConversation `.message-slasht-status`) */
+[data-theme='dark'] .message-slasht-status,
+[data-theme='dark'] .message-slasht-status.message-slasht-status {
+  border-color: #3a3d40;
+  background: #1b1d1f;
   color: #e8e8ea;
 }
 

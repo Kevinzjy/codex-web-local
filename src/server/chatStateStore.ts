@@ -4,6 +4,12 @@ import { dirname, join } from 'node:path'
 
 type ThreadPermissionMode = 'default' | 'full-access'
 
+/** Cross-client manual unread; latest bump wins per thread. */
+export type ThreadFlagSyncEntry = { value: boolean; bumpMs: number }
+
+/** Cross-client run indicator: non-null turnId = running; null = idle. Latest bump wins. */
+export type ThreadRunStateEntry = { turnId: string | null; bumpMs: number }
+
 type ChatStateDocument = {
   version: 1
   updatedAtIso: string
@@ -13,7 +19,16 @@ type ChatStateDocument = {
   projectDisplayNames: Record<string, string>
   /** Last-known absolute cwd per project basename key (survives zero-thread project rows). */
   projectCwdByProjectName: Record<string, string>
+  /**
+   * Legacy boolean manual unread (pre bump-sync). Migrated into manualUnreadSyncByThreadId on read.
+   * @deprecated
+   */
   manualUnreadByThreadId: Record<string, boolean>
+  manualUnreadSyncByThreadId: Record<string, ThreadFlagSyncEntry>
+  eventUnreadSyncByThreadId: Record<string, ThreadFlagSyncEntry>
+  threadRunStateByThreadId: Record<string, ThreadRunStateEntry>
+  /** Last-seen thread.updatedAtIso when marked read; merged across PATCH clients by max ISO per thread. */
+  readStateByThreadId: Record<string, string>
   threadPermissionModeByThreadId: Record<string, ThreadPermissionMode>
   threadFullAccessAcknowledgedByThreadId: Record<string, boolean>
 }
@@ -24,7 +39,12 @@ export type ChatStatePayload = {
   projectOrder: string[]
   projectDisplayNames: Record<string, string>
   projectCwdByProjectName: Record<string, string>
+  /** Derived from manualUnreadSync for simple clients. */
   manualUnreadByThreadId: Record<string, boolean>
+  manualUnreadSyncByThreadId: Record<string, ThreadFlagSyncEntry>
+  eventUnreadSyncByThreadId: Record<string, ThreadFlagSyncEntry>
+  threadRunStateByThreadId: Record<string, ThreadRunStateEntry>
+  readStateByThreadId: Record<string, string>
   threadPermissionModeByThreadId: Record<string, ThreadPermissionMode>
   threadFullAccessAcknowledgedByThreadId: Record<string, boolean>
   updatedAtIso: string
@@ -39,6 +59,10 @@ export type ChatStatePatch = Partial<
     | 'projectDisplayNames'
     | 'projectCwdByProjectName'
     | 'manualUnreadByThreadId'
+    | 'manualUnreadSyncByThreadId'
+    | 'eventUnreadSyncByThreadId'
+    | 'threadRunStateByThreadId'
+    | 'readStateByThreadId'
     | 'threadPermissionModeByThreadId'
     | 'threadFullAccessAcknowledgedByThreadId'
   >
@@ -133,6 +157,107 @@ function normalizeManualUnread(value: unknown): Record<string, boolean> {
   return record
 }
 
+function normalizeFlagSync(value: unknown): Record<string, ThreadFlagSyncEntry> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+
+  const record: Record<string, ThreadFlagSyncEntry> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const o = raw as Record<string, unknown>
+    const bumpMs = typeof o.bumpMs === 'number' && Number.isFinite(o.bumpMs) ? o.bumpMs : 0
+    if (o.value === true) {
+      record[key] = { value: true, bumpMs }
+    } else if (o.value === false) {
+      record[key] = { value: false, bumpMs }
+    }
+  }
+  return record
+}
+
+function mergeFlagSyncByThreadId(
+  current: Record<string, ThreadFlagSyncEntry>,
+  incoming: Record<string, ThreadFlagSyncEntry>,
+): Record<string, ThreadFlagSyncEntry> {
+  const next = { ...current }
+  for (const [tid, inc] of Object.entries(incoming)) {
+    const cur = next[tid]
+    if (!cur || inc.bumpMs >= cur.bumpMs) {
+      next[tid] = inc
+    }
+  }
+  return next
+}
+
+function normalizeRunState(value: unknown): Record<string, ThreadRunStateEntry> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+
+  const record: Record<string, ThreadRunStateEntry> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const o = raw as Record<string, unknown>
+    const bumpMs = typeof o.bumpMs === 'number' && Number.isFinite(o.bumpMs) ? o.bumpMs : 0
+    if (o.turnId === null) {
+      record[key] = { turnId: null, bumpMs }
+      continue
+    }
+    if (typeof o.turnId === 'string' && o.turnId.length > 0) {
+      record[key] = { turnId: o.turnId, bumpMs }
+    }
+  }
+  return record
+}
+
+function mergeRunStateByThreadId(
+  current: Record<string, ThreadRunStateEntry>,
+  incoming: Record<string, ThreadRunStateEntry>,
+): Record<string, ThreadRunStateEntry> {
+  const next = { ...current }
+  for (const [tid, inc] of Object.entries(incoming)) {
+    const cur = next[tid]
+    if (!cur || inc.bumpMs >= cur.bumpMs) {
+      next[tid] = inc
+    }
+  }
+  return next
+}
+
+function normalizeReadState(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+
+  const record: Record<string, string> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue
+    if (typeof raw !== 'string') continue
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    record[key] = trimmed
+  }
+  return record
+}
+
+function mergeReadStateByThreadId(
+  current: Record<string, string>,
+  incoming: Record<string, string>,
+): Record<string, string> {
+  const keys = new Set([...Object.keys(current), ...Object.keys(incoming)])
+  const next: Record<string, string> = {}
+  for (const threadId of keys) {
+    const a = current[threadId]?.trim() ?? ''
+    const b = incoming[threadId]?.trim() ?? ''
+    if (!a && !b) continue
+    if (!a) {
+      next[threadId] = b
+    } else if (!b) {
+      next[threadId] = a
+    } else {
+      next[threadId] = a >= b ? a : b
+    }
+  }
+  return next
+}
+
 function normalizeThreadPermissionModes(value: unknown): Record<string, ThreadPermissionMode> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
 
@@ -159,14 +284,40 @@ function normalizeThreadFullAccessAck(value: unknown): Record<string, boolean> {
   return record
 }
 
+function deriveManualUnreadBool(sync: Record<string, ThreadFlagSyncEntry>): Record<string, boolean> {
+  const record: Record<string, boolean> = {}
+  for (const [tid, e] of Object.entries(sync)) {
+    if (e.value === true) record[tid] = true
+  }
+  return record
+}
+
+function migrateLegacyManualUnread(
+  legacy: Record<string, boolean>,
+  existingSync: Record<string, ThreadFlagSyncEntry>,
+): Record<string, ThreadFlagSyncEntry> {
+  let next = { ...existingSync }
+  for (const [tid, v] of Object.entries(legacy)) {
+    if (v !== true) continue
+    if (next[tid]) continue
+    next = { ...next, [tid]: { value: true, bumpMs: 0 } }
+  }
+  return next
+}
+
 function toPayload(doc: ChatStateDocument): ChatStatePayload {
+  const manualSync = doc.manualUnreadSyncByThreadId
   return {
     pinnedThreadIds: [...doc.pinnedThreadIds],
     collapsedProjects: { ...doc.collapsedProjects },
     projectOrder: [...doc.projectOrder],
     projectDisplayNames: { ...doc.projectDisplayNames },
     projectCwdByProjectName: { ...doc.projectCwdByProjectName },
-    manualUnreadByThreadId: { ...doc.manualUnreadByThreadId },
+    manualUnreadByThreadId: deriveManualUnreadBool(manualSync),
+    manualUnreadSyncByThreadId: { ...manualSync },
+    eventUnreadSyncByThreadId: { ...doc.eventUnreadSyncByThreadId },
+    threadRunStateByThreadId: { ...doc.threadRunStateByThreadId },
+    readStateByThreadId: { ...doc.readStateByThreadId },
     threadPermissionModeByThreadId: { ...doc.threadPermissionModeByThreadId },
     threadFullAccessAcknowledgedByThreadId: { ...doc.threadFullAccessAcknowledgedByThreadId },
     updatedAtIso: doc.updatedAtIso,
@@ -183,6 +334,10 @@ function createDefaultDocument(): ChatStateDocument {
     projectDisplayNames: {},
     projectCwdByProjectName: {},
     manualUnreadByThreadId: {},
+    manualUnreadSyncByThreadId: {},
+    eventUnreadSyncByThreadId: {},
+    threadRunStateByThreadId: {},
+    readStateByThreadId: {},
     threadPermissionModeByThreadId: {},
     threadFullAccessAcknowledgedByThreadId: {},
   }
@@ -197,6 +352,10 @@ async function readDocument(path: string): Promise<ChatStateDocument> {
     }
     const record = parsed as Record<string, unknown>
     const base = createDefaultDocument()
+    const legacyManual = normalizeManualUnread(record.manualUnreadByThreadId)
+    let manualSync = normalizeFlagSync(record.manualUnreadSyncByThreadId)
+    manualSync = migrateLegacyManualUnread(legacyManual, manualSync)
+
     return {
       ...base,
       updatedAtIso:
@@ -208,7 +367,11 @@ async function readDocument(path: string): Promise<ChatStateDocument> {
       projectOrder: normalizeProjectOrder(record.projectOrder),
       projectDisplayNames: normalizeProjectDisplayNames(record.projectDisplayNames),
       projectCwdByProjectName: normalizeProjectCwdByProjectName(record.projectCwdByProjectName),
-      manualUnreadByThreadId: normalizeManualUnread(record.manualUnreadByThreadId),
+      manualUnreadByThreadId: legacyManual,
+      manualUnreadSyncByThreadId: manualSync,
+      eventUnreadSyncByThreadId: normalizeFlagSync(record.eventUnreadSyncByThreadId),
+      threadRunStateByThreadId: normalizeRunState(record.threadRunStateByThreadId),
+      readStateByThreadId: normalizeReadState(record.readStateByThreadId),
       threadPermissionModeByThreadId: normalizeThreadPermissionModes(record.threadPermissionModeByThreadId),
       threadFullAccessAcknowledgedByThreadId: normalizeThreadFullAccessAck(record.threadFullAccessAcknowledgedByThreadId),
     }
@@ -236,7 +399,10 @@ function isSameChatStateData(first: ChatStateDocument, second: ChatStateDocument
     JSON.stringify(a.projectOrder) === JSON.stringify(b.projectOrder) &&
     JSON.stringify(a.projectDisplayNames) === JSON.stringify(b.projectDisplayNames) &&
     JSON.stringify(a.projectCwdByProjectName) === JSON.stringify(b.projectCwdByProjectName) &&
-    JSON.stringify(a.manualUnreadByThreadId) === JSON.stringify(b.manualUnreadByThreadId) &&
+    JSON.stringify(a.manualUnreadSyncByThreadId) === JSON.stringify(b.manualUnreadSyncByThreadId) &&
+    JSON.stringify(a.eventUnreadSyncByThreadId) === JSON.stringify(b.eventUnreadSyncByThreadId) &&
+    JSON.stringify(a.threadRunStateByThreadId) === JSON.stringify(b.threadRunStateByThreadId) &&
+    JSON.stringify(a.readStateByThreadId) === JSON.stringify(b.readStateByThreadId) &&
     JSON.stringify(a.threadPermissionModeByThreadId) === JSON.stringify(b.threadPermissionModeByThreadId) &&
     JSON.stringify(a.threadFullAccessAcknowledgedByThreadId) === JSON.stringify(b.threadFullAccessAcknowledgedByThreadId)
   )
@@ -288,6 +454,30 @@ export class ChatStateStore {
     }
     if (patch.manualUnreadByThreadId !== undefined) {
       next.manualUnreadByThreadId = normalizeManualUnread(patch.manualUnreadByThreadId)
+    }
+    if (patch.manualUnreadSyncByThreadId !== undefined) {
+      next.manualUnreadSyncByThreadId = mergeFlagSyncByThreadId(
+        current.manualUnreadSyncByThreadId,
+        normalizeFlagSync(patch.manualUnreadSyncByThreadId),
+      )
+    }
+    if (patch.eventUnreadSyncByThreadId !== undefined) {
+      next.eventUnreadSyncByThreadId = mergeFlagSyncByThreadId(
+        current.eventUnreadSyncByThreadId,
+        normalizeFlagSync(patch.eventUnreadSyncByThreadId),
+      )
+    }
+    if (patch.threadRunStateByThreadId !== undefined) {
+      next.threadRunStateByThreadId = mergeRunStateByThreadId(
+        current.threadRunStateByThreadId,
+        normalizeRunState(patch.threadRunStateByThreadId),
+      )
+    }
+    if (patch.readStateByThreadId !== undefined) {
+      next.readStateByThreadId = mergeReadStateByThreadId(
+        current.readStateByThreadId,
+        normalizeReadState(patch.readStateByThreadId),
+      )
     }
     if (patch.threadPermissionModeByThreadId !== undefined) {
       next.threadPermissionModeByThreadId = normalizeThreadPermissionModes(patch.threadPermissionModeByThreadId)
