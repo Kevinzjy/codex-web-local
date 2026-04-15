@@ -20,6 +20,8 @@ export type FsEntry = {
   name: string
   path: string
   kind: FsEntryKind
+  /** `st_size` in bytes (same metadata as ls -l). */
+  sizeBytes: number
 }
 
 /** Directory listing for @ path completion (files + subfolders). */

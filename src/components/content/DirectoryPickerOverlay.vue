@@ -310,7 +310,7 @@ onBeforeUnmount(() => {
 }
 
 .directory-picker-dialog {
-  @apply pointer-events-auto relative flex max-h-[85vh] w-full max-w-lg flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-xl;
+  @apply pointer-events-auto relative flex max-h-[85vh] w-full max-w-lg flex-col gap-3 overflow-hidden rounded-xl border border-zinc-200 bg-white p-4 shadow-xl;
 }
 
 .directory-picker-header {
@@ -365,13 +365,8 @@ onBeforeUnmount(() => {
   @apply rounded-lg border border-zinc-200 bg-white px-2 py-1 text-sm text-zinc-800 transition enabled:hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40;
 }
 
-/*
- * Scroll container: fixed height band (do not use flex-1 here — parent has no definite height).
- * Use overflow-y: scroll + visible scrollbar — global .codex-subtle-scroll hides the thumb until hover,
- * so users cannot tell there are more folders below.
- */
 .directory-picker-list-wrap {
-  @apply min-h-[12rem] max-h-[min(70vh,32rem)] shrink-0 overflow-y-scroll overscroll-contain rounded-lg border border-zinc-200 bg-zinc-50/80;
+  @apply min-h-[8rem] flex-1 overflow-y-scroll overscroll-contain rounded-lg border border-zinc-200 bg-zinc-50/80;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgb(161 161 170) rgb(244 244 245);

@@ -86,12 +86,14 @@ The installed CLI also accepts proxy flags that are passed to `codex app-server`
 ## Current UI Behavior Notes
 
 - New chat project selection uses `ComposerDropdown` with search; **Add new project** opens a **server-side directory picker** (host paths). Optional **New folder** creates a directory under the current picker path (`POST /codex-api/fs/mkdir`). Manual path entry remains as a fallback.
+- Directory picker layout keeps `Manual path` + action rows visible while only the folder list scrolls; `ComposerDropdown` add-form width is responsive on narrow windows.
 - The chosen folder is a cwd string used when the first message creates a new Codex thread.
 - **Project row:** The **⋯** menu and **right-click** on the project header open the same menu (`SidebarThreadTree.vue`). Right-click positions the panel with its top-left near the cursor (opens down-right); the dots trigger uses an anchored panel (`project-menu-panel--anchor` with `-translate-x-full`). **Remove project dir** calls `removeProject` in `useDesktopState.ts`: `archiveThread` for every thread in that project, `loadThreads()`, then `removeProjectFromLocalState` (order, `sourceGroups`, display names, cwd map, pins/unread pruning, selection).
 - Message file references support backtick paths and Markdown links such as `[App.vue](/abs/path/App.vue)`.
 - File links are displayed as paths relative to the active thread cwd when possible, matching the Codex CLI style more closely than basename-only rendering.
 - **Message body rendering (`ThreadConversation.vue`):** `parseMessageBlocks` splits triple-backtick fenced code regions from the rest of the text; fenced blocks render as `<pre><code>` (`.message-code-block`); other paragraphs still go through `parseInlineSegments`. Dark theme overrides for code blocks and **`/status` panels** (`.message-slasht-status`) live in `style.css`.
 - The composer uses a textarea. `Enter` submits, `Shift+Enter` inserts a newline, and IME composition Enter is not submitted.
+- Composer `@` completion preserves the user input style (absolute for `@/…`, relative for `@.` / `@../` / other relative queries). Suggestions show file size in the right column for files only; directories do not show a size column.
 - **Git worktree (from thread cwd):** Composer **New worktree** opens `GitWorktreeModal`; server runs `git worktree add` via `POST /codex-api/git/worktree`. After success, optional follow-up: **none** (path only), **new chat** with the worktree as project cwd, or **fork current thread** into the new cwd (see `App.vue` `onWorktreeCreated`).
 
 ## Recently shipped (do not duplicate in backlog below)

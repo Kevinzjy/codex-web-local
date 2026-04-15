@@ -249,6 +249,8 @@ import { useWebSpeechRecognition } from '../../composables/useWebSpeechRecogniti
 import { createGitWorktree } from '../../api/codexRpcClient'
 import { CodexApiError } from '../../api/codexErrors'
 import { isCoarsePointer, isLikelyIOS } from '../../utils/platform'
+import { posixNormalizeAbs, posixRelative } from '../../utils/posixPath'
+import { formatListByteSize } from '../../utils/formatListByteSize'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
 import IconTablerPlayerStopFilled from '../icons/IconTablerPlayerStopFilled.vue'
 import IconTablerMicrophone from '../icons/IconTablerMicrophone.vue'
@@ -642,19 +644,27 @@ function fallbackAtHints(queryRaw: string): TriggerSuggestion[] {
   return base.filter((row) => row.label.toLowerCase().includes(q))
 }
 
-function mentionInsertForEntry(cwdNorm: string, entryPath: string, kind: FsEntryKind): string {
-  const cwd = cwdNorm.replace(/\\/gu, '/').replace(/\/+$/gu, '')
-  const p = entryPath.replace(/\\/gu, '/')
+function mentionInsertForEntry(
+  cwdNorm: string,
+  entryPath: string,
+  kind: FsEntryKind,
+  queryAfterAt: string,
+): string {
+  const cwd = posixNormalizeAbs(cwdNorm.trim().replace(/\\/gu, '/'))
+  const absEntry = posixNormalizeAbs(entryPath.replace(/\\/gu, '/'))
+  const q = queryAfterAt.replace(/\\/gu, '/')
+  /** User typed `@/…` — keep absolute insertion; otherwise preserve relative forms (`./`, `../`, or cwd-relative). */
+  const wantsAbsolute = q.startsWith('/')
+
   let body: string
-  if (p.startsWith(`${cwd}/`) || p === cwd) {
-    const rest = p === cwd ? '' : p.slice(cwd.length + 1)
-    body = rest || '.'
-    if (kind === 'directory' && !body.endsWith('/') && body !== '.') {
+  if (wantsAbsolute) {
+    body = absEntry
+    if (kind === 'directory' && !body.endsWith('/')) {
       body += '/'
     }
   } else {
-    body = p
-    if (kind === 'directory' && !body.endsWith('/')) {
+    body = posixRelative(cwd, absEntry) || '.'
+    if (kind === 'directory' && !body.endsWith('/') && body !== '.') {
       body += '/'
     }
   }
@@ -704,8 +714,8 @@ async function runAtPathCompletion(context: TriggerContext, requestId: number): 
     const suggestions: TriggerSuggestion[] = res.entries.map((e) => ({
       id: `fs:${e.path}`,
       label: e.kind === 'directory' ? `${e.name}/` : e.name,
-      insertText: mentionInsertForEntry(cwd, e.path, e.kind),
-      description: e.path,
+      insertText: mentionInsertForEntry(cwd, e.path, e.kind, context.query),
+      description: e.kind === 'file' ? formatListByteSize(e.sizeBytes) : undefined,
       isDirectory: e.kind === 'directory',
     }))
     if (suggestions.length === 0) {
@@ -1154,11 +1164,11 @@ onUnmounted(() => {
 }
 
 .thread-composer-trigger-item-label {
-  @apply min-w-0 max-w-[min(50%,11rem)] shrink truncate font-mono text-xs text-zinc-900;
+  @apply min-w-0 max-w-[min(55%,14rem)] shrink truncate font-mono text-xs text-zinc-900;
 }
 
 .thread-composer-trigger-item-desc {
-  @apply min-w-0 flex-1 truncate text-right text-[11px] text-zinc-500;
+  @apply min-w-0 flex-1 truncate text-right text-[11px] tabular-nums text-zinc-500;
 }
 
 .thread-composer-image-list {

@@ -172,23 +172,7 @@ export async function handleFsDirectoriesGet(rawPath: string | null, res: Server
 
 const FS_COMPLETE_MAX = 200
 
-/**
- * Configured roots plus the active thread cwd (and its realpath) so @ completion lists files
- * for projects that live outside default CODEX_WEB_PROJECT_ROOTS / $HOME (e.g. /data/...).
- */
-async function listingRootsForThreadCwd(baseRoots: string[], cwdAbs: string): Promise<string[]> {
-  const merged = new Set(baseRoots)
-  const norm = path.normalize(cwdAbs)
-  merged.add(norm)
-  try {
-    merged.add(await realpath(norm))
-  } catch {
-    // keep normalized cwd only
-  }
-  return [...merged]
-}
-
-async function listMixedEntries(dirLogical: string, roots: string[]): Promise<FsEntry[]> {
+async function listMixedEntries(dirLogical: string, roots?: string[]): Promise<FsEntry[]> {
   let dirents: import('node:fs').Dirent[]
   try {
     dirents = await readdir(dirLogical, { withFileTypes: true })
@@ -200,13 +184,14 @@ async function listMixedEntries(dirLogical: string, roots: string[]): Promise<Fs
   for (const d of dirents) {
     if (d.name === '.' || d.name === '..') continue
     const childLogical = path.normalize(path.join(dirLogical, d.name))
-    if (!(await isUnderAllowedRoots(childLogical, roots))) continue
+    if (Array.isArray(roots) && roots.length > 0 && !(await isUnderAllowedRoots(childLogical, roots))) continue
     try {
       const stChild = await stat(childLogical)
       entries.push({
         name: d.name,
         path: childLogical,
         kind: stChild.isDirectory() ? 'directory' : 'file',
+        sizeBytes: stChild.size,
       })
     } catch {
       continue
@@ -218,8 +203,9 @@ async function listMixedEntries(dirLogical: string, roots: string[]): Promise<Fs
 }
 
 /**
- * Host-side path completion for @mentions: lists files and folders under allowed roots,
- * plus the current thread cwd (so workspaces outside default roots still get listings).
+ * Host-side path completion for @mentions based on current thread cwd.
+ * This endpoint intentionally does not restrict completion to CODEX_WEB_PROJECT_ROOTS,
+ * so relative queries like ../ can traverse parent directories from cwd.
  * Query is the raw text after `@` (may be empty, a partial path, or absolute).
  */
 export async function handleFsCompleteGet(
@@ -227,13 +213,6 @@ export async function handleFsCompleteGet(
   qParam: string | null,
   res: ServerResponse,
 ): Promise<void> {
-  const roots = await resolveAllowedRoots()
-
-  if (roots.length === 0) {
-    setJson(res, 503, { error: 'No accessible project roots configured' })
-    return
-  }
-
   const cwdRaw = cwdParam?.trim() ?? ''
   if (!cwdRaw) {
     setJson(res, 400, { error: 'Missing cwd' })
@@ -259,13 +238,11 @@ export async function handleFsCompleteGet(
     return
   }
 
-  const listingRoots = await listingRootsForThreadCwd(roots, cwdAbs)
-
   const qRaw = qParam ?? ''
   const q = qRaw
 
   if (q.trim().length === 0) {
-    const entries = await listMixedEntries(cwdAbs, listingRoots)
+    const entries = await listMixedEntries(cwdAbs)
     const payload: FsCompleteResponse = { cwd: cwdAbs, query: q, entries }
     setJson(res, 200, payload)
     return
@@ -276,11 +253,7 @@ export async function handleFsCompleteGet(
   try {
     const st = await stat(candidate)
     if (st.isDirectory()) {
-      if (!(await isUnderAllowedRoots(candidate, listingRoots))) {
-        setJson(res, 403, { error: 'Path is outside allowed project roots' })
-        return
-      }
-      const entries = await listMixedEntries(candidate, listingRoots)
+      const entries = await listMixedEntries(candidate)
       const payload: FsCompleteResponse = { cwd: cwdAbs, query: q, entries }
       setJson(res, 200, payload)
       return
@@ -289,7 +262,7 @@ export async function handleFsCompleteGet(
       const payload: FsCompleteResponse = {
         cwd: cwdAbs,
         query: q,
-        entries: [{ name: path.basename(candidate), path: candidate, kind: 'file' }],
+        entries: [{ name: path.basename(candidate), path: candidate, kind: 'file', sizeBytes: st.size }],
       }
       setJson(res, 200, payload)
       return
@@ -303,11 +276,8 @@ export async function handleFsCompleteGet(
 
   try {
     const stParent = await stat(parentDir)
-    if (
-      stParent.isDirectory() &&
-      (await isUnderAllowedRoots(parentDir, listingRoots))
-    ) {
-      const all = await listMixedEntries(parentDir, listingRoots)
+    if (stParent.isDirectory()) {
+      const all = await listMixedEntries(parentDir)
       const filtered = basePrefix
         ? all.filter((e) => e.name.toLowerCase().startsWith(basePrefix.toLowerCase()))
         : all
@@ -319,7 +289,7 @@ export async function handleFsCompleteGet(
     // Fallback below
   }
 
-  const all = await listMixedEntries(cwdAbs, listingRoots)
+  const all = await listMixedEntries(cwdAbs)
   const needle = q.trim().toLowerCase()
   const filtered = all.filter(
     (e) => e.name.toLowerCase().includes(needle) || e.path.toLowerCase().includes(needle),

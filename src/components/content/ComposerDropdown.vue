@@ -350,7 +350,7 @@ onBeforeUnmount(() => {
 }
 
 .composer-dropdown-add-form {
-  @apply flex min-w-72 items-center gap-1;
+  @apply flex w-full min-w-0 items-center gap-1 sm:min-w-72;
 }
 
 .composer-dropdown-add-input {
