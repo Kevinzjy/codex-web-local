@@ -74,15 +74,21 @@ systemd:
 uninstall:
 	@if [ "$$(uname -s)" = "Linux" ] && [ -n "$(HOME)" ]; then \
 		if command -v systemctl >/dev/null 2>&1; then \
-			systemctl --user disable --now codex-web-local.service 2>/dev/null || true; \
+			systemctl --user stop codex-web-local.service 2>/dev/null || true; \
+			echo "systemd (user): stopped codex-web-local.service (if it was running)"; \
+		fi; \
+	fi
+	npm uninstall -g codex-web-local
+	@if [ "$$(uname -s)" = "Linux" ] && [ -n "$(HOME)" ]; then \
+		if command -v systemctl >/dev/null 2>&1; then \
+			systemctl --user disable codex-web-local.service 2>/dev/null || true; \
 		fi; \
 		rm -f "$(SYSTEMD_USER_UNITDIR)/codex-web-local.service"; \
 		if command -v systemctl >/dev/null 2>&1; then \
 			systemctl --user daemon-reload 2>/dev/null || true; \
 		fi; \
-		echo "systemd (user): stopped/disabled codex-web-local.service (if it was present)"; \
+		echo "systemd (user): disabled/removed codex-web-local.service (if it was present)"; \
 	fi
-	npm uninstall -g codex-web-local
 
 node_modules/.bin/vite: package.json package-lock.json
 	npm ci

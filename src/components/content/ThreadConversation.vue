@@ -1,9 +1,9 @@
 <template>
   <section class="conversation-root">
-    <p v-if="isLoading" class="conversation-loading">Loading messages...</p>
+    <p v-if="showLoadingState" class="conversation-loading">{{ LOADING_MESSAGES_TEXT }}</p>
 
     <p
-      v-else-if="messages.length === 0 && pendingRequests.length === 0 && !liveOverlay"
+      v-else-if="showEmptyState"
       class="conversation-empty"
     >
       No messages in this thread yet.
@@ -128,12 +128,41 @@
                   class="message-slasht-status"
                   >{{ message.text }}</pre
                 >
+                <div
+                  v-else-if="message.messageType === 'clientBang.command'"
+                  class="message-bang-card"
+                >
+                  <p class="message-bang-header">{{ parseBangHeader(message.text) }}</p>
+                  <div class="message-bang-output-wrap">
+                    <button
+                      type="button"
+                      class="message-code-copy"
+                      :aria-label="isCopied(`bang:${message.id}`) ? 'Copied' : 'Copy output'"
+                      @click="copyText(`bang:${message.id}`, parseBangOutput(message.text))"
+                    >
+                      <IconTablerCheck v-if="isCopied(`bang:${message.id}`)" class="message-code-copy-icon" />
+                      <IconTablerCopy v-else class="message-code-copy-icon" />
+                    </button>
+                    <pre class="message-bang-output">{{ parseBangOutput(message.text) }}</pre>
+                  </div>
+                </div>
                 <template v-else>
                   <template v-for="(block, bIdx) in parseMessageBlocks(message.text)" :key="`blk-${message.id}-${bIdx}`">
-                    <pre
+                    <div
                       v-if="block.kind === 'code'"
-                      class="message-code-block"
-                    ><code class="message-code-block-inner">{{ block.code }}</code></pre>
+                      class="message-code-block-wrap"
+                    >
+                      <button
+                        type="button"
+                        class="message-code-copy"
+                        :aria-label="isCopied(`code:${message.id}:${bIdx}`) ? 'Copied' : 'Copy code block'"
+                        @click="copyText(`code:${message.id}:${bIdx}`, block.code)"
+                      >
+                        <IconTablerCheck v-if="isCopied(`code:${message.id}:${bIdx}`)" class="message-code-copy-icon" />
+                        <IconTablerCopy v-else class="message-code-copy-icon" />
+                      </button>
+                      <pre class="message-code-block"><code class="message-code-block-inner">{{ block.code }}</code></pre>
+                    </div>
                     <p v-else-if="block.kind === 'markdown' && block.text.length > 0" class="message-text">
                       <template v-for="(segment, index) in parseInlineSegments(block.text)" :key="`seg-${bIdx}-${index}`">
                         <span v-if="segment.kind === 'text'">{{ segment.value }}</span>
@@ -182,7 +211,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type {
   ThreadScrollState,
   UiLiveOverlay,
@@ -192,12 +221,15 @@ import type {
   UiServerRequestReply,
 } from '../../types/codex'
 import IconTablerX from '../icons/IconTablerX.vue'
+import IconTablerCopy from '../icons/IconTablerCopy.vue'
+import IconTablerCheck from '../icons/IconTablerCheck.vue'
 
 const props = defineProps<{
   messages: UiMessage[]
   pendingRequests: UiServerRequest[]
   liveOverlay: UiLiveOverlay | null
   isLoading: boolean
+  hasLoadedMessages: boolean
   activeThreadId: string
   scrollState: ThreadScrollState | null
   workingDirectory: string
@@ -213,8 +245,26 @@ const bottomAnchorRef = ref<HTMLElement | null>(null)
 const modalImageUrl = ref('')
 const toolQuestionAnswers = ref<Record<string, string>>({})
 const toolQuestionOtherAnswers = ref<Record<string, string>>({})
+const copiedBlockId = ref('')
+let copiedBlockResetTimer: number | null = null
+const LOADING_MESSAGES_TEXT = 'Loading messages in this thread.'
 const BOTTOM_THRESHOLD_PX = 16
 const NEAR_BOTTOM_SCROLL_RATIO = 0.999
+const showLoadingState = computed(
+  () =>
+    props.isLoading ||
+    (!props.hasLoadedMessages &&
+      props.messages.length === 0 &&
+      props.pendingRequests.length === 0 &&
+      !props.liveOverlay),
+)
+const showEmptyState = computed(
+  () =>
+    !showLoadingState.value &&
+    props.messages.length === 0 &&
+    props.pendingRequests.length === 0 &&
+    !props.liveOverlay,
+)
 type InlineSegment =
   | { kind: 'text'; value: string }
   | { kind: 'bold'; value: string }
@@ -533,6 +583,67 @@ function readRequestReason(request: UiServerRequest): string {
   const params = asRecord(request.params)
   const reason = params?.reason
   return typeof reason === 'string' ? reason.trim() : ''
+}
+
+function parseBangHeader(text: string): string {
+  const [firstLine] = text.split('\n')
+  const header = firstLine?.trim()
+  return header && header.length > 0 ? header : '• You ran command'
+}
+
+function parseBangOutput(text: string): string {
+  const idx = text.indexOf('\n')
+  if (idx < 0) return ''
+  return text.slice(idx + 1)
+}
+
+function isCopied(blockId: string): boolean {
+  return copiedBlockId.value === blockId
+}
+
+function fallbackCopyToClipboard(text: string): boolean {
+  try {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.setAttribute('readonly', 'true')
+    textarea.style.position = 'fixed'
+    textarea.style.top = '-9999px'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.focus()
+    textarea.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+async function copyText(blockId: string, text: string): Promise<void> {
+  const value = text ?? ''
+  if (!value) return
+  let copied = false
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value)
+      copied = true
+    } else {
+      copied = fallbackCopyToClipboard(value)
+    }
+  } catch {
+    copied = fallbackCopyToClipboard(value)
+  }
+  if (copied) {
+    copiedBlockId.value = blockId
+    if (copiedBlockResetTimer !== null) {
+      window.clearTimeout(copiedBlockResetTimer)
+    }
+    copiedBlockResetTimer = window.setTimeout(() => {
+      copiedBlockResetTimer = null
+      copiedBlockId.value = ''
+    }, 1200)
+  }
 }
 
 function toolQuestionKey(requestId: UiServerRequestId, questionId: string): string {
@@ -893,6 +1004,10 @@ onBeforeUnmount(() => {
   if (bottomLockFrame) {
     cancelAnimationFrame(bottomLockFrame)
   }
+  if (copiedBlockResetTimer !== null) {
+    clearTimeout(copiedBlockResetTimer)
+    copiedBlockResetTimer = null
+  }
 })
 </script>
 
@@ -1056,16 +1171,55 @@ onBeforeUnmount(() => {
 }
 
 .message-code-block {
-  @apply my-2 w-full min-w-0 max-w-full overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2;
+  /* Reserve space for the top-right Copy control so short one-line snippets are not covered */
+  @apply my-2 w-full min-w-0 max-w-full min-w-[min(100%,13rem)] overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 py-2 pl-3 pr-[3.75rem];
+}
+
+.message-code-block-wrap {
+  @apply relative block w-full min-w-0 max-w-full min-w-[min(100%,13rem)];
 }
 
 .message-code-block-inner {
-  @apply m-0 block font-mono text-[0.8125rem] leading-relaxed text-slate-900 whitespace-pre;
+  @apply m-0 block font-mono text-[0.8125rem] leading-relaxed text-slate-900 whitespace-pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message-code-copy {
+  @apply absolute right-2 top-2 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 opacity-65;
+}
+
+.message-code-copy-icon {
+  @apply h-4 w-4 shrink-0;
+}
+
+.message-code-block-wrap:hover .message-code-copy,
+.message-bang-output-wrap:hover .message-code-copy {
+  @apply opacity-100;
 }
 
 .message-slasht-status {
   @apply my-2 w-full min-w-0 max-w-full overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5;
   @apply m-0 font-mono text-[0.75rem] leading-snug text-slate-900 whitespace-pre-wrap;
+}
+
+.message-bang-card {
+  @apply my-2 w-full min-w-0 max-w-full;
+}
+
+.message-bang-header {
+  @apply m-0 mb-1 font-mono text-[0.75rem] leading-snug text-slate-800 whitespace-pre-wrap;
+}
+
+.message-bang-output {
+  @apply m-0 w-full min-w-0 max-w-full min-w-[min(100%,13rem)] overflow-x-auto overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-3 pr-[3.75rem];
+  @apply m-0 font-mono text-[0.75rem] text-slate-900 whitespace-pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.25rem;
+  max-height: calc(1.25rem * 24 + 1.25rem);
+}
+
+.message-bang-output-wrap {
+  @apply relative block w-full min-w-0 max-w-full min-w-[min(100%,13rem)];
 }
 
 .message-card[data-role='user'] .message-code-block {

@@ -1211,7 +1211,7 @@ onUnmounted(() => {
 }
 
 .thread-composer-new-worktree {
-  @apply inline-flex h-8 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2.5 text-sm font-medium text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-zinc-600;
+  @apply inline-flex h-8 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2.5 text-xs font-medium text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-zinc-600;
 }
 
 .thread-composer-new-worktree-icon {
@@ -1264,6 +1264,10 @@ onUnmounted(() => {
 
 .thread-composer-permission {
   @apply min-w-0 max-w-full sm:max-w-[11rem];
+}
+
+.thread-composer-permission :deep(.composer-dropdown-trigger) {
+  @apply text-xs;
 }
 
 .thread-composer-context-usage {

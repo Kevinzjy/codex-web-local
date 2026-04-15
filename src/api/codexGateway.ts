@@ -1,5 +1,6 @@
 import {
   fetchChatState,
+  executeBashCommand,
   fetchGitStatus,
   fetchRpcMethodCatalog,
   fetchRpcNotificationCatalog,
@@ -10,6 +11,7 @@ import {
   subscribeRpcNotifications,
   type ChatState,
   type ChatStatePatch,
+  type BashExecResult,
   type RpcNotification,
   type ThreadFlagSyncEntry,
   type ThreadRunStateEntry,
@@ -436,6 +438,10 @@ export async function getChatState(): Promise<ChatState> {
 
 export async function patchChatState(patch: ChatStatePatch): Promise<ChatState> {
   return patchChatStateRpc(patch)
+}
+
+export async function runBashCommand(command: string, cwd: string): Promise<BashExecResult> {
+  return executeBashCommand(command, cwd)
 }
 
 export async function updatePinnedThreadIds(pinnedThreadIds: string[]): Promise<ChatState> {

@@ -11,6 +11,7 @@ import {
   patchChatState,
   interruptThreadTurn,
   replyToServerRequest,
+  runBashCommand,
   getThreadGroups,
   getThreadMessages,
   readEffectiveConfig,
@@ -73,6 +74,13 @@ function isComposerDraftEmpty(draft: UiComposerDraft): boolean {
   return draft.text.length === 0 && draft.images.length === 0
 }
 
+function parseBangCommand(text: string): string {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('!')) return ''
+  const command = trimmed.slice(1).trim()
+  return command
+}
+
 function isApprovalServerRequest(request: UiServerRequest): boolean {
   return APPROVAL_REQUEST_METHODS.has(request.method)
 }
@@ -90,6 +98,8 @@ const EVENT_UNREAD_SYNC_STORAGE_KEY = 'codex-web-local.event-unread-sync.v1'
 const THREAD_RUN_STATE_STORAGE_KEY = 'codex-web-local.thread-run-state-sync.v1'
 const AUTO_REFRESH_ENABLED_STORAGE_KEY = 'codex-web-local.auto-refresh-enabled.v1'
 const EVENT_SYNC_DEBOUNCE_MS = 220
+const STALE_RUN_STATE_RECOVERY_MS = 120_000
+const STALE_REMOTE_RUN_STATE_MAX_AGE_MS = 10 * 60_000
 const AUTO_REFRESH_INTERVAL_MS = 4000
 const GIT_STATUS_MIN_GAP_MS = 2000
 const CHAT_STATE_SYNC_DEBOUNCE_MS = 450
@@ -1058,6 +1068,11 @@ export function useDesktopState() {
     if (!summary) return withSlash
     return insertTurnSummaryMessage(withSlash, summary)
   })
+  const hasLoadedSelectedThreadMessages = computed<boolean>(() => {
+    const threadId = selectedThreadId.value
+    if (!threadId) return true
+    return loadedMessagesByThreadId.value[threadId] === true
+  })
 
   function setSelectedThreadId(nextThreadId: string): void {
     if (selectedThreadId.value === nextThreadId) return
@@ -1197,12 +1212,18 @@ export function useDesktopState() {
   }
 
   function applyThreadFlags(): void {
+    const nowMs = Date.now()
     const flaggedGroups: UiProjectGroup[] = sourceGroups.value.map((group) => ({
       projectName: group.projectName,
       threads: group.threads.map((thread) => {
         const runSync = threadRunStateByThreadId.value[thread.id]
+        const runSyncAgeMs = runSync ? Math.max(0, nowMs - runSync.bumpMs) : Number.POSITIVE_INFINITY
+        const hasFreshRemoteRunState = runSyncAgeMs <= STALE_REMOTE_RUN_STATE_MAX_AGE_MS
         const remoteRunning =
-          runSync != null && runSync.turnId != null && runSync.turnId.length > 0
+          runSync != null &&
+          runSync.turnId != null &&
+          runSync.turnId.length > 0 &&
+          hasFreshRemoteRunState
         const localRunning = inProgressById.value[thread.id] === true
         const inProgress = localRunning || remoteRunning
         const manualUnread = manualUnreadSyncByThreadId.value[thread.id]?.value === true
@@ -1221,6 +1242,28 @@ export function useDesktopState() {
       }),
     }))
     projectGroups.value = mergeThreadGroups(projectGroups.value, flaggedGroups)
+  }
+
+  function pruneStaleRemoteRunState(nowMs = Date.now()): void {
+    let changed = false
+    const next: Record<string, ThreadRunStateEntry> = {}
+    for (const [threadId, state] of Object.entries(threadRunStateByThreadId.value)) {
+      if (state.turnId == null) {
+        next[threadId] = state
+        continue
+      }
+      const ageMs = Math.max(0, nowMs - state.bumpMs)
+      if (ageMs > STALE_REMOTE_RUN_STATE_MAX_AGE_MS) {
+        changed = true
+        next[threadId] = { turnId: null, bumpMs: nowMs }
+        continue
+      }
+      next[threadId] = state
+    }
+    if (!changed) return
+    threadRunStateByThreadId.value = next
+    saveRunStateRecord(THREAD_RUN_STATE_STORAGE_KEY, next)
+    applyThreadFlags()
   }
 
   function pruneThreadScopedState(flatThreads: UiThread[]): void {
@@ -1423,6 +1466,47 @@ export function useDesktopState() {
     turnErrorByThreadId.value = {
       ...turnErrorByThreadId.value,
       [threadId]: { message: normalizedMessage },
+    }
+  }
+
+  function maybeRecoverStaleInProgress(threadId: string, messagesForThread: UiMessage[]): void {
+    if (!threadId) return
+    const localRunning = inProgressById.value[threadId] === true
+    const runState = threadRunStateByThreadId.value[threadId]
+    const remoteRunning = runState != null && runState.turnId != null && runState.turnId.length > 0
+    if (!localRunning && !remoteRunning) return
+    if (activeTurnIdByThreadId.value[threadId]) return
+    if (turnActivityByThreadId.value[threadId]) return
+    if ((pendingServerRequestsByThreadId.value[threadId]?.length ?? 0) > 0) return
+    const lastMessage = messagesForThread[messagesForThread.length - 1]
+    if (!lastMessage || lastMessage.role !== 'assistant') return
+    const lastBumpMs = Math.max(runState?.bumpMs ?? 0, 0)
+    if (Date.now() - lastBumpMs < STALE_RUN_STATE_RECOVERY_MS) return
+    setThreadInProgress(threadId, false)
+    setTurnActivityForThread(threadId, null)
+  }
+
+  function isThreadRunningByState(threadId: string, nowMs = Date.now()): boolean {
+    if (!threadId) return false
+    if (inProgressById.value[threadId] === true) return true
+    const runState = threadRunStateByThreadId.value[threadId]
+    if (!runState || !runState.turnId) return false
+    return Math.max(0, nowMs - runState.bumpMs) <= STALE_REMOTE_RUN_STATE_MAX_AGE_MS
+  }
+
+  async function reconcileThreadRuntimeAfterStopAttempt(threadId: string): Promise<void> {
+    if (!threadId) return
+    await Promise.all([loadThreads(), loadMessages(threadId, { silent: true }), loadPendingServerRequestsFromBridge()])
+    const hasActiveTurn = Boolean(activeTurnIdByThreadId.value[threadId])
+    const hasActivity = Boolean(turnActivityByThreadId.value[threadId])
+    const hasPendingForThread = (pendingServerRequestsByThreadId.value[threadId]?.length ?? 0) > 0
+    if (!hasActiveTurn && !hasActivity && !hasPendingForThread) {
+      setThreadInProgress(threadId, false)
+      setTurnActivityForThread(threadId, null)
+      setTurnErrorForThread(threadId, null)
+      if (activeTurnIdByThreadId.value[threadId]) {
+        activeTurnIdByThreadId.value = omitKey(activeTurnIdByThreadId.value, threadId)
+      }
     }
   }
 
@@ -2335,6 +2419,8 @@ export function useDesktopState() {
       const previousLiveAgent = liveAgentMessagesByThreadId.value[threadId] ?? []
       const nextLiveAgent = removeRedundantLiveAgentMessages(previousLiveAgent, nextMessages)
       setLiveAgentMessagesForThread(threadId, nextLiveAgent)
+      // Recover when a stale in-progress cache survives but the thread has clearly reached an assistant reply.
+      maybeRecoverStaleInProgress(threadId, mergedMessages)
 
       loadedMessagesByThreadId.value = {
         ...loadedMessagesByThreadId.value,
@@ -2476,6 +2562,62 @@ export function useDesktopState() {
     }
   }
 
+  function summarizeBangOutput(output: string): string {
+    const trimmed = output.trim()
+    if (!trimmed) return 'Command finished with no output.'
+    return trimmed
+  }
+
+  async function handleClientBangCommand(threadId: string, command: string): Promise<void> {
+    const cwd = selectedThread.value?.cwd?.trim() ?? ''
+    const userMsg: UiMessage = {
+      id: newClientSlashMessageId(),
+      role: 'user',
+      text: `!${command}`,
+      messageType: 'clientBang.user',
+    }
+    appendClientSlashMessages(threadId, [userMsg])
+    shouldAutoScrollOnNextAgentEvent = true
+    if (!cwd) {
+      appendClientSlashMessages(threadId, [
+        {
+          id: newClientSlashMessageId(),
+          role: 'system',
+          text: `• You ran ${command} (failed)\nMissing thread working directory.`,
+          messageType: 'clientBang.command',
+        },
+      ])
+      return
+    }
+
+    try {
+      const result = await runBashCommand(command, cwd)
+      const outputText = summarizeBangOutput(result.combined)
+      const statusBits: string[] = []
+      if (result.timedOut) statusBits.push('timed out')
+      if (typeof result.exitCode === 'number' && result.exitCode !== 0) statusBits.push(`exit ${result.exitCode}`)
+      const suffix = statusBits.length > 0 ? ` (${statusBits.join(', ')})` : ''
+      appendClientSlashMessages(threadId, [
+        {
+          id: newClientSlashMessageId(),
+          role: 'system',
+          text: `• You ran ${result.command}${suffix}\n${outputText}`,
+          messageType: 'clientBang.command',
+        },
+      ])
+    } catch (unknownError) {
+      const message = unknownError instanceof Error ? unknownError.message : 'Failed to execute command'
+      appendClientSlashMessages(threadId, [
+        {
+          id: newClientSlashMessageId(),
+          role: 'system',
+          text: `• You ran ${command} (failed)\n${message}`,
+          messageType: 'clientBang.command',
+        },
+      ])
+    }
+  }
+
   async function sendMessageToSelectedThread(draft: UiComposerDraft): Promise<void> {
     const threadId = selectedThreadId.value
     const nextDraft = normalizeComposerDraft(draft)
@@ -2484,6 +2626,11 @@ export function useDesktopState() {
     const bareSlash = tryParseBareSlashCommand(nextDraft.text)
     if (nextDraft.images.length === 0 && bareSlash === 'status') {
       await handleClientSlashStatusCommand(threadId)
+      return
+    }
+    const bangCommand = nextDraft.images.length === 0 ? parseBangCommand(nextDraft.text) : ''
+    if (bangCommand) {
+      await handleClientBangCommand(threadId, bangCommand)
       return
     }
 
@@ -2635,26 +2782,28 @@ export function useDesktopState() {
   async function interruptSelectedThreadTurn(): Promise<void> {
     const threadId = selectedThreadId.value
     if (!threadId) return
-    if (inProgressById.value[threadId] !== true) return
+    if (!isThreadRunningByState(threadId)) return
     const turnId = activeTurnIdByThreadId.value[threadId]
 
     isInterruptingTurn.value = true
     error.value = ''
     try {
-      await interruptThreadTurn(threadId, turnId)
-      setThreadInProgress(threadId, false)
-      setTurnActivityForThread(threadId, null)
-      setTurnErrorForThread(threadId, null)
-      if (activeTurnIdByThreadId.value[threadId]) {
-        activeTurnIdByThreadId.value = omitKey(activeTurnIdByThreadId.value, threadId)
+      if (turnId) {
+        await interruptThreadTurn(threadId, turnId)
       }
+      await reconcileThreadRuntimeAfterStopAttempt(threadId)
       pendingThreadMessageRefresh.add(threadId)
       pendingThreadsRefresh = true
       await syncFromNotifications()
     } catch (unknownError) {
       const errorMessage = unknownError instanceof Error ? unknownError.message : 'Failed to interrupt active turn'
-      setTurnErrorForThread(threadId, errorMessage)
-      error.value = errorMessage
+      await reconcileThreadRuntimeAfterStopAttempt(threadId)
+      if (isThreadRunningByState(threadId)) {
+        setTurnErrorForThread(threadId, errorMessage)
+        error.value = errorMessage
+      } else {
+        setTurnErrorForThread(threadId, null)
+      }
     } finally {
       isInterruptingTurn.value = false
     }
@@ -2845,6 +2994,7 @@ export function useDesktopState() {
     } finally {
       isPolling.value = false
       void mergeRemoteThreadUiFromServer()
+      pruneStaleRemoteRunState()
     }
   }
 
@@ -2903,6 +3053,7 @@ export function useDesktopState() {
           void syncFromNotifications()
         }, EVENT_SYNC_DEBOUNCE_MS)
       }
+      pruneStaleRemoteRunState()
     }
   }
 
@@ -3374,6 +3525,7 @@ export function useDesktopState() {
     accountRateLimits,
     accountRateLimitsError,
     messages,
+    hasLoadedSelectedThreadMessages,
     isLoadingThreads,
     isLoadingMessages,
     isSendingMessage,

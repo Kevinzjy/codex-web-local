@@ -89,7 +89,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, withDefaults } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import IconTablerChevronDown from '../icons/IconTablerChevronDown.vue'
 import PermissionModeIcon from './PermissionModeIcon.vue'
 

@@ -177,6 +177,7 @@
             <div class="content-grid">
               <div class="content-thread">
                 <ThreadConversation :key="composerThreadContextId" :messages="filteredMessages" :is-loading="isLoadingMessages"
+                  :has-loaded-messages="hasLoadedSelectedThreadMessages"
                   :active-thread-id="composerThreadContextId" :scroll-state="selectedThreadScrollState"
                   :working-directory="selectedThread?.cwd ?? ''"
                   :live-overlay="liveOverlay"
@@ -287,6 +288,7 @@ const {
   accountRateLimitsError,
   error,
   messages,
+  hasLoadedSelectedThreadMessages,
   isLoadingThreads,
   isLoadingMessages,
   isSendingMessage,

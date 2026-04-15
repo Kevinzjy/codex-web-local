@@ -134,6 +134,35 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
     return []
   }
 
+  if (item.type === 'commandExecution') {
+    const command = typeof item.command === 'string' ? item.command.trim() : ''
+    if (!command) {
+      return []
+    }
+    const output = typeof item.aggregatedOutput === 'string' ? item.aggregatedOutput : ''
+    const firstOutputLine = output
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0)
+    const statusSuffix =
+      item.status === 'inProgress'
+        ? ' (running)'
+        : item.status === 'failed'
+          ? ` (failed${typeof item.exitCode === 'number' ? `: exit ${item.exitCode}` : ''})`
+          : item.status === 'declined'
+            ? ' (declined)'
+            : ''
+    const body = firstOutputLine || (item.status === 'inProgress' ? 'Command is running...' : 'Command finished.')
+    return [
+      {
+        id: item.id,
+        role: 'system',
+        text: `• You ran ${command}${statusSuffix}\n└ ${body}`,
+        messageType: `commandExecution.${item.status}`,
+      },
+    ]
+  }
+
   return []
 }
 

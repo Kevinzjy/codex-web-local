@@ -26,6 +26,16 @@ export type ThreadPermissionMode = 'default' | 'full-access'
 export type ThreadFlagSyncEntry = { value: boolean; bumpMs: number }
 
 export type ThreadRunStateEntry = { turnId: string | null; bumpMs: number }
+export type BashExecResult = {
+  ok: true
+  command: string
+  cwd: string
+  stdout: string
+  stderr: string
+  combined: string
+  exitCode: number | null
+  timedOut: boolean
+}
 
 export type ChatState = {
   pinnedThreadIds: string[]
@@ -612,4 +622,40 @@ export async function patchChatState(patch: ChatStatePatch): Promise<ChatState> 
   }
 
   return parseChatStatePayload(payload)
+}
+
+export async function executeBashCommand(command: string, cwd: string): Promise<BashExecResult> {
+  let response: Response
+  try {
+    response = await fetch('/codex-api/exec/bash', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command, cwd }),
+    })
+  } catch (error) {
+    throw new CodexApiError(
+      error instanceof Error ? error.message : 'Bash execution request failed before it was sent',
+      { code: 'network_error', method: 'exec/bash' },
+    )
+  }
+
+  let payload: unknown = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+
+  if (!response.ok) {
+    throw new CodexApiError(
+      extractErrorMessage(payload, `Bash execution failed with HTTP ${response.status}`),
+      { code: 'http_error', method: 'exec/bash', status: response.status },
+    )
+  }
+
+  const record = asRecord(payload)
+  if (!record || record.ok !== true) {
+    throw new CodexApiError('Unexpected response from exec/bash', { code: 'invalid_response', method: 'exec/bash' })
+  }
+  return record as BashExecResult
 }

@@ -9,6 +9,20 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+type BangExecResult = {
+  ok: true
+  command: string
+  cwd: string
+  stdout: string
+  stderr: string
+  combined: string
+  exitCode: number | null
+  timedOut: boolean
+}
+
+const BANG_EXEC_TIMEOUT_MS = 20_000
+const BANG_EXEC_MAX_OUTPUT_BYTES = 256 * 1024
+
 type JsonRpcCall = {
   jsonrpc: '2.0'
   id: number
@@ -129,6 +143,81 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   if (raw.length === 0) return null
 
   return JSON.parse(raw) as unknown
+}
+
+async function executeBangCommand(command: string, cwd: string): Promise<BangExecResult> {
+  const normalizedCommand = command.trim()
+  const normalizedCwd = cwd.trim()
+  if (!normalizedCommand) {
+    throw new Error('Missing command')
+  }
+  if (!normalizedCwd) {
+    throw new Error('Missing cwd')
+  }
+
+  return await new Promise<BangExecResult>((resolve, reject) => {
+    const proc = spawn('/bin/bash', ['-lc', normalizedCommand], {
+      cwd: normalizedCwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: process.env,
+    })
+
+    let stdout = ''
+    let stderr = ''
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    let timedOut = false
+
+    const appendChunk = (target: 'stdout' | 'stderr', chunk: string): void => {
+      const bytes = Buffer.byteLength(chunk, 'utf8')
+      if (target === 'stdout') {
+        const remain = Math.max(0, BANG_EXEC_MAX_OUTPUT_BYTES - stdoutBytes)
+        if (remain <= 0) return
+        const piece = bytes <= remain ? chunk : Buffer.from(chunk, 'utf8').subarray(0, remain).toString('utf8')
+        stdout += piece
+        stdoutBytes += Buffer.byteLength(piece, 'utf8')
+        return
+      }
+      const remain = Math.max(0, BANG_EXEC_MAX_OUTPUT_BYTES - stderrBytes)
+      if (remain <= 0) return
+      const piece = bytes <= remain ? chunk : Buffer.from(chunk, 'utf8').subarray(0, remain).toString('utf8')
+      stderr += piece
+      stderrBytes += Buffer.byteLength(piece, 'utf8')
+    }
+
+    const timeout = setTimeout(() => {
+      timedOut = true
+      proc.kill('SIGTERM')
+      setTimeout(() => {
+        if (!proc.killed) {
+          proc.kill('SIGKILL')
+        }
+      }, 1200)
+    }, BANG_EXEC_TIMEOUT_MS)
+
+    proc.stdout.setEncoding('utf8')
+    proc.stderr.setEncoding('utf8')
+    proc.stdout.on('data', (chunk: string) => appendChunk('stdout', chunk))
+    proc.stderr.on('data', (chunk: string) => appendChunk('stderr', chunk))
+    proc.on('error', (error) => {
+      clearTimeout(timeout)
+      reject(error)
+    })
+    proc.on('close', (code) => {
+      clearTimeout(timeout)
+      const combined = `${stdout}${stderr}`.trimEnd()
+      resolve({
+        ok: true,
+        command: normalizedCommand,
+        cwd: normalizedCwd,
+        stdout,
+        stderr,
+        combined,
+        exitCode: typeof code === 'number' ? code : null,
+        timedOut,
+      })
+    })
+  })
 }
 
 class AppServerProcess {
@@ -653,6 +742,24 @@ export function createCodexBridgeMiddleware(options: CodexBridgeOptions = {}): C
       if (req.method === 'POST' && url.pathname === '/codex-api/fs/mkdir') {
         const payload = await readJsonBody(req)
         await handleFsMkdirPost(payload, res)
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/exec/bash') {
+        const payload = await readJsonBody(req)
+        const body = asRecord(payload)
+        const command = typeof body?.command === 'string' ? body.command : ''
+        const cwd = typeof body?.cwd === 'string' ? body.cwd : ''
+        if (!command.trim() || !cwd.trim()) {
+          setJson(res, 400, { error: 'Missing command or cwd in JSON body' })
+          return
+        }
+        try {
+          const result = await executeBangCommand(command, cwd)
+          setJson(res, 200, result)
+        } catch (error) {
+          setJson(res, 500, { error: getErrorMessage(error, 'Failed to execute bash command') })
+        }
         return
       }
 

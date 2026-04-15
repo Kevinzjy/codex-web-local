@@ -69,6 +69,7 @@ When started with password protection (default), the server prints the password 
 - **Threads sidebar:** Projects group chats by working directory. Use pin, archive, rename, and expand/collapse as needed. Open the project menu from the **⋯** control or by **right‑clicking the project row** (same actions). **Remove project dir** archives **all** chats under that project on the Codex host (so they do not reappear after refresh), then drops the project from the local sidebar and related saved UI state.
 - **New chat:** Choose a **folder on the machine running codex-web-local** (not the browser) for the initial cwd when creating a thread. Allowed roots are configurable via the server (see `CODEX_WEB_PROJECT_ROOTS` in the project’s `AGENTS.md` / server docs).
 - **Conversation:** Assistant and user messages support inline Markdown-style formatting where implemented (bold, inline code, file links). **Fenced code blocks** (triple backticks) render as scrollable code panels with monospace styling in light and dark themes.
+- **Composer commands:** `/status` is handled client-side and renders a local status card. `!<shell command>` runs on the host via `/bin/bash -lc` in the active thread cwd and renders output as a dedicated command panel (`You ran ...` + output block). Long command output stays fully available inside a scrollable panel (default 24 visible lines). Code/output blocks include a top-right one-click copy button.
 
 ## systemd user service (Linux)
 

@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import express, { type Express } from 'express'
@@ -22,6 +22,23 @@ export type ServerInstance = {
 export function createServer(options: ServerOptions = {}): ServerInstance {
   const app = express()
   const bridge = createCodexBridgeMiddleware({ proxy: options.proxy })
+  const distExists = existsSync(distDir)
+  const indexExists = existsSync(indexHtmlPath)
+  let indexHtmlContent: string | null = null
+
+  if (indexExists) {
+    try {
+      indexHtmlContent = readFileSync(indexHtmlPath, 'utf8')
+    } catch (error) {
+      console.warn(
+        `[codex-web-local] Failed to read frontend index at startup: ${indexHtmlPath} (${(error as Error).message})`,
+      )
+    }
+  }
+
+  console.info(
+    `[codex-web-local] Frontend bundle status: distExists=${distExists} indexExists=${indexExists} indexLoaded=${indexHtmlContent !== null} indexPath=${indexHtmlPath}`,
+  )
 
   if (!existsSync(indexHtmlPath)) {
     console.warn(
@@ -39,13 +56,16 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   app.use(bridge)
 
   // 3. Static files from Vue build
-  if (existsSync(distDir)) {
+  if (distExists) {
     app.use(express.static(distDir))
   }
 
   // 4. SPA fallback
   app.use((_req, res) => {
-    if (!existsSync(indexHtmlPath)) {
+    if (indexHtmlContent === null) {
+      console.warn(
+        `[codex-web-local] SPA fallback requested but frontend index is unavailable: ${indexHtmlPath}`,
+      )
       res
         .status(503)
         .type('text/plain; charset=utf-8')
@@ -59,7 +79,7 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
         )
       return
     }
-    res.sendFile(indexHtmlPath)
+    res.status(200).type('text/html; charset=utf-8').send(indexHtmlContent)
   })
 
   return {

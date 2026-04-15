@@ -738,12 +738,36 @@ body {
   color: #e8e8ea;
 }
 
+[data-theme='dark'] .message-code-copy,
+[data-theme='dark'] .message-code-copy.message-code-copy {
+  border-color: #3a3d40;
+  background: #23262a;
+  color: #cfd4da;
+}
+
+[data-theme='dark'] .message-code-copy:hover {
+  background: #2c3035;
+  color: #eef2f7;
+}
+
 /* `/status` and similar monospace panels (ThreadConversation `.message-slasht-status`) */
 [data-theme='dark'] .message-slasht-status,
 [data-theme='dark'] .message-slasht-status.message-slasht-status {
   border-color: #3a3d40;
   background: #1b1d1f;
   color: #e8e8ea;
+}
+
+[data-theme='dark'] .message-bang-output,
+[data-theme='dark'] .message-bang-output.message-bang-output {
+  border-color: #3a3d40;
+  background: #1b1d1f;
+  color: #e8e8ea;
+}
+
+[data-theme='dark'] .message-bang-header,
+[data-theme='dark'] .message-bang-header.message-bang-header {
+  color: #d0d4d8;
 }
 
 [data-theme='dark'] .message-file-link,
