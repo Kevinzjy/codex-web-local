@@ -163,9 +163,106 @@
                       </button>
                       <pre class="message-code-block"><code class="message-code-block-inner">{{ block.code }}</code></pre>
                     </div>
+                    <div
+                      v-else-if="block.kind === 'table'"
+                      class="message-table-wrap"
+                      role="group"
+                      aria-label="Markdown table"
+                    >
+                      <table class="message-table">
+                        <thead>
+                          <tr>
+                            <th
+                              v-for="(cell, cIdx) in block.header"
+                              :key="`tbl-h-${message.id}-${bIdx}-${cIdx}`"
+                              :data-align="block.align[cIdx] || ''"
+                            >
+                              <template v-for="(segment, index) in parseInlineSegments(cell)" :key="`tbl-h-seg-${bIdx}-${cIdx}-${index}`">
+                                <span v-if="segment.kind === 'text'">{{ segment.value }}</span>
+                                <a
+                                  v-else-if="segment.kind === 'link'"
+                                  class="message-link"
+                                  :href="segment.href"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  {{ segment.label }}
+                                </a>
+                                <a v-else-if="segment.kind === 'file'" class="message-file-link" href="#" @click.prevent>
+                                  {{ segment.displayName }}
+                                </a>
+                                <strong v-else-if="segment.kind === 'bold'" class="message-bold">{{ segment.value }}</strong>
+                                <code v-else class="message-inline-code">{{ segment.value }}</code>
+                              </template>
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="(row, rIdx) in block.rows" :key="`tbl-r-${message.id}-${bIdx}-${rIdx}`">
+                            <td
+                              v-for="(cell, cIdx) in row"
+                              :key="`tbl-c-${message.id}-${bIdx}-${rIdx}-${cIdx}`"
+                              :data-align="block.align[cIdx] || ''"
+                            >
+                              <template v-for="(segment, index) in parseInlineSegments(cell)" :key="`tbl-c-seg-${bIdx}-${rIdx}-${cIdx}-${index}`">
+                                <span v-if="segment.kind === 'text'">{{ segment.value }}</span>
+                                <a
+                                  v-else-if="segment.kind === 'link'"
+                                  class="message-link"
+                                  :href="segment.href"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  {{ segment.label }}
+                                </a>
+                                <a v-else-if="segment.kind === 'file'" class="message-file-link" href="#" @click.prevent>
+                                  {{ segment.displayName }}
+                                </a>
+                                <strong v-else-if="segment.kind === 'bold'" class="message-bold">{{ segment.value }}</strong>
+                                <code v-else class="message-inline-code">{{ segment.value }}</code>
+                              </template>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <hr v-else-if="block.kind === 'hr'" class="message-hr" aria-hidden="true" />
+                    <component
+                      v-else-if="block.kind === 'heading'"
+                      :is="`h${block.level}`"
+                      class="message-heading"
+                      :data-level="String(block.level)"
+                    >
+                      <template v-for="(segment, index) in parseInlineSegments(block.text)" :key="`hd-${bIdx}-${index}`">
+                        <span v-if="segment.kind === 'text'">{{ segment.value }}</span>
+                        <a
+                          v-else-if="segment.kind === 'link'"
+                          class="message-link"
+                          :href="segment.href"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {{ segment.label }}
+                        </a>
+                        <a v-else-if="segment.kind === 'file'" class="message-file-link" href="#" @click.prevent>
+                          {{ segment.displayName }}
+                        </a>
+                        <strong v-else-if="segment.kind === 'bold'" class="message-bold">{{ segment.value }}</strong>
+                        <code v-else class="message-inline-code">{{ segment.value }}</code>
+                      </template>
+                    </component>
                     <p v-else-if="block.kind === 'markdown' && block.text.length > 0" class="message-text">
                       <template v-for="(segment, index) in parseInlineSegments(block.text)" :key="`seg-${bIdx}-${index}`">
                         <span v-if="segment.kind === 'text'">{{ segment.value }}</span>
+                        <a
+                          v-else-if="segment.kind === 'link'"
+                          class="message-link"
+                          :href="segment.href"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {{ segment.label }}
+                        </a>
                         <a v-else-if="segment.kind === 'file'" class="message-file-link" href="#" @click.prevent>
                           {{ segment.displayName }}
                         </a>
@@ -270,10 +367,19 @@ type InlineSegment =
   | { kind: 'bold'; value: string }
   | { kind: 'code'; value: string }
   | { kind: 'file'; value: string; displayName: string }
+  | { kind: 'link'; href: string; label: string }
 
 type MessageBlock =
   | { kind: 'markdown'; text: string }
   | { kind: 'code'; language: string; code: string }
+  | { kind: 'hr' }
+  | { kind: 'heading'; level: 1 | 2 | 3 | 4 | 5 | 6; text: string }
+  | {
+    kind: 'table'
+    header: string[]
+    align: Array<'left' | 'center' | 'right' | null>
+    rows: string[][]
+  }
 
 let scrollRestoreFrame = 0
 let scrollRestoreGuardFrame = 0
@@ -374,6 +480,13 @@ function createFileSegment(value: string, label?: string): InlineSegment | null 
   return { kind: 'file', value, displayName }
 }
 
+function isSafeExternalLink(target: string): boolean {
+  const trimmed = target.trim()
+  if (!trimmed) return false
+  if (trimmed.includes('\n')) return false
+  return /^https?:\/\//u.test(trimmed)
+}
+
 function parseMarkdownFileLinkAt(text: string, start: number): { segment: InlineSegment; end: number } | null {
   if (text[start] !== '[') return null
 
@@ -391,6 +504,29 @@ function parseMarkdownFileLinkAt(text: string, start: number): { segment: Inline
   const segment = createFileSegment(target, label)
   if (!segment) return null
   return { segment, end: targetEnd + 1 }
+}
+
+function parseMarkdownLinkAt(text: string, start: number): { segment: InlineSegment; end: number } | null {
+  if (text[start] !== '[') return null
+
+  const labelEnd = text.indexOf(']', start + 1)
+  if (labelEnd < 0 || text[labelEnd + 1] !== '(') return null
+
+  const targetStart = labelEnd + 2
+  const targetEnd = text.indexOf(')', targetStart)
+  if (targetEnd < 0) return null
+
+  const label = text.slice(start + 1, labelEnd)
+  const target = text.slice(targetStart, targetEnd)
+  if (label.includes('\n') || target.includes('\n')) return null
+
+  if (!isSafeExternalLink(target)) return null
+  const normalizedLabel = label.trim().length > 0 ? label : target
+
+  return {
+    segment: { kind: 'link', href: target.trim(), label: normalizedLabel },
+    end: targetEnd + 1,
+  }
 }
 
 function parseBoldAt(text: string, start: number): { segment: InlineSegment; end: number } | null {
@@ -417,7 +553,7 @@ function parseBoldAt(text: string, start: number): { segment: InlineSegment; end
  */
 function parseMessageBlocks(text: string): MessageBlock[] {
   if (!text.includes('```')) {
-    return [{ kind: 'markdown', text }]
+    return parseMarkdownTables(text)
   }
 
   const blocks: MessageBlock[] = []
@@ -431,7 +567,7 @@ function parseMessageBlocks(text: string): MessageBlock[] {
     if (paragraphLines.length === 0) return
     const joined = paragraphLines.join('\n')
     if (joined.length > 0) {
-      blocks.push({ kind: 'markdown', text: joined })
+      blocks.push(...parseMarkdownTables(joined))
     }
     paragraphLines.length = 0
   }
@@ -471,6 +607,186 @@ function parseMessageBlocks(text: string): MessageBlock[] {
   }
 
   flushParagraph()
+  return blocks.length > 0 ? blocks : parseMarkdownTables(text)
+}
+
+function looksLikeTableRow(value: string): boolean {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return false
+  if (!trimmed.includes('|')) return false
+  // Avoid treating code-fence markers or divider-only lines as a table row.
+  if (trimmed === '|' || trimmed === '||') return false
+  return true
+}
+
+function isTableSeparatorRow(value: string): boolean {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return false
+  if (!trimmed.includes('-')) return false
+
+  const cells = splitTableLine(trimmed)
+  if (cells.length === 0) return false
+
+  for (const cell of cells) {
+    const raw = cell.trim()
+    if (raw.length === 0) return false
+    // Valid forms: ---  :---  ---:  :---:
+    if (!/^:?-{3,}:?$/u.test(raw)) return false
+  }
+  return true
+}
+
+function parseTableAlignmentCells(value: string): Array<'left' | 'center' | 'right' | null> {
+  const cells = splitTableLine(value)
+  return cells.map((cell) => {
+    const raw = cell.trim()
+    const left = raw.startsWith(':')
+    const right = raw.endsWith(':')
+    if (left && right) return 'center'
+    if (left) return 'left'
+    if (right) return 'right'
+    return null
+  })
+}
+
+function splitTableLine(value: string): string[] {
+  let text = value.trim()
+  if (text.startsWith('|')) text = text.slice(1)
+  if (text.endsWith('|')) text = text.slice(0, -1)
+
+  const cells: string[] = []
+  let current = ''
+  let escaping = false
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]
+    if (escaping) {
+      current += ch
+      escaping = false
+      continue
+    }
+    if (ch === '\\') {
+      escaping = true
+      continue
+    }
+    if (ch === '|') {
+      cells.push(current.trim())
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  cells.push(current.trim())
+  return cells
+}
+
+function parseGfmTableAt(lines: string[], startIndex: number): { block: MessageBlock; nextIndex: number } | null {
+  if (startIndex + 1 >= lines.length) return null
+  const headerLine = lines[startIndex] ?? ''
+  const sepLine = lines[startIndex + 1] ?? ''
+
+  if (!looksLikeTableRow(headerLine)) return null
+  if (!isTableSeparatorRow(sepLine)) return null
+
+  const headerCells = splitTableLine(headerLine)
+  if (headerCells.length === 0) return null
+
+  const alignCells = parseTableAlignmentCells(sepLine)
+  const headerWidth = headerCells.length
+
+  const align: Array<'left' | 'center' | 'right' | null> = []
+  for (let i = 0; i < headerWidth; i += 1) {
+    align.push(alignCells[i] ?? null)
+  }
+
+  const rows: string[][] = []
+  let cursor = startIndex + 2
+  while (cursor < lines.length) {
+    const rowLine = lines[cursor] ?? ''
+    if (rowLine.trim().length === 0) break
+    if (!looksLikeTableRow(rowLine)) break
+    const cells = splitTableLine(rowLine)
+    const normalized: string[] = []
+    for (let i = 0; i < headerWidth; i += 1) {
+      normalized.push(cells[i] ?? '')
+    }
+    rows.push(normalized)
+    cursor += 1
+  }
+
+  return {
+    block: {
+      kind: 'table',
+      header: headerCells.slice(0, headerWidth),
+      align,
+      rows,
+    },
+    nextIndex: cursor,
+  }
+}
+
+function parseMarkdownTables(text: string): MessageBlock[] {
+  const lines = text.split('\n')
+  const blocks: MessageBlock[] = []
+  const paragraph: string[] = []
+
+  const flushParagraph = (): void => {
+    if (paragraph.length === 0) return
+    const joined = paragraph.join('\n')
+    if (joined.trim().length > 0) {
+      blocks.push({ kind: 'markdown', text: joined })
+    }
+    paragraph.length = 0
+  }
+
+  const parseHeadingLine = (line: string): { level: 1 | 2 | 3 | 4 | 5 | 6; text: string } | null => {
+    const match = line.match(/^(#{1,6})\s+(.+?)\s*$/u)
+    if (!match) return null
+    const level = match[1]?.length ?? 0
+    const textValue = match[2]?.trim() ?? ''
+    if (!textValue) return null
+    if (level < 1 || level > 6) return null
+    return { level: level as 1 | 2 | 3 | 4 | 5 | 6, text: textValue }
+  }
+
+  const isHorizontalRuleLine = (line: string): boolean => {
+    const trimmed = line.trim()
+    if (!trimmed) return false
+    // CommonMark thematic breaks: --- *** ___ (3+)
+    return /^(-{3,}|\*{3,}|_{3,})$/u.test(trimmed)
+  }
+
+  let i = 0
+  while (i < lines.length) {
+    const table = parseGfmTableAt(lines, i)
+    if (table) {
+      flushParagraph()
+      blocks.push(table.block)
+      i = table.nextIndex
+      continue
+    }
+
+    const line = lines[i] ?? ''
+    const heading = parseHeadingLine(line.trim())
+    if (heading) {
+      flushParagraph()
+      blocks.push({ kind: 'heading', level: heading.level, text: heading.text })
+      i += 1
+      continue
+    }
+
+    if (isHorizontalRuleLine(line)) {
+      flushParagraph()
+      blocks.push({ kind: 'hr' })
+      i += 1
+      continue
+    }
+
+    paragraph.push(line)
+    i += 1
+  }
+
+  flushParagraph()
   return blocks.length > 0 ? blocks : [{ kind: 'markdown', text }]
 }
 
@@ -491,6 +807,17 @@ function parseInlineSegments(text: string): InlineSegment[] {
       }
       segments.push(markdownFileLink.segment)
       cursor = markdownFileLink.end
+      textStart = cursor
+      continue
+    }
+
+    const markdownLink = parseMarkdownLinkAt(text, cursor)
+    if (markdownLink) {
+      if (cursor > textStart) {
+        segments.push({ kind: 'text', value: text.slice(textStart, cursor) })
+      }
+      segments.push(markdownLink.segment)
+      cursor = markdownLink.end
       textStart = cursor
       continue
     }
@@ -1197,6 +1524,68 @@ onBeforeUnmount(() => {
   @apply opacity-100;
 }
 
+.message-table-wrap {
+  @apply my-2 w-full min-w-0 max-w-full overflow-x-auto rounded-lg border border-slate-200 bg-white;
+}
+
+.message-table {
+  @apply w-full min-w-[min(100%,18rem)] border-collapse text-sm leading-relaxed text-slate-800;
+}
+
+.message-table th {
+  @apply px-3 py-2 text-left font-semibold border-b border-slate-200 bg-slate-50 align-top;
+}
+
+.message-table td {
+  @apply px-3 py-2 text-left border-b border-slate-200 align-top;
+}
+
+.message-table tbody tr:last-child td {
+  @apply border-b-0;
+}
+
+.message-table th[data-align='right'],
+.message-table td[data-align='right'] {
+  @apply text-right;
+}
+
+.message-table th[data-align='center'],
+.message-table td[data-align='center'] {
+  @apply text-center;
+}
+
+.message-hr {
+  @apply my-3 w-full border-0 border-t border-slate-200;
+}
+
+.message-heading {
+  @apply m-0 mt-3 mb-1 w-full min-w-0 max-w-full text-slate-900;
+}
+
+.message-heading[data-level='1'] {
+  @apply text-xl leading-snug font-semibold;
+}
+
+.message-heading[data-level='2'] {
+  @apply text-lg leading-snug font-semibold;
+}
+
+.message-heading[data-level='3'] {
+  @apply text-base leading-snug font-semibold;
+}
+
+.message-heading[data-level='4'] {
+  @apply text-sm leading-snug font-semibold;
+}
+
+.message-heading[data-level='5'] {
+  @apply text-sm leading-snug font-semibold opacity-90;
+}
+
+.message-heading[data-level='6'] {
+  @apply text-xs leading-snug font-semibold opacity-90;
+}
+
 .message-slasht-status {
   @apply my-2 w-full min-w-0 max-w-full overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5;
   @apply m-0 font-mono text-[0.75rem] leading-snug text-slate-900 whitespace-pre-wrap;
@@ -1235,6 +1624,10 @@ onBeforeUnmount(() => {
 }
 
 .message-file-link {
+  @apply text-sm leading-relaxed text-[#0969da] no-underline hover:text-[#1f6feb] hover:underline underline-offset-2;
+}
+
+.message-link {
   @apply text-sm leading-relaxed text-[#0969da] no-underline hover:text-[#1f6feb] hover:underline underline-offset-2;
 }
 
